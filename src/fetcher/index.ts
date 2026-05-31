@@ -6,6 +6,7 @@
  */
 
 import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 import type { AssetManifest, VersionsLock, TargetTriple } from "../embed/manifest.ts";
 import { TOOL_VERSION } from "../cli/version.ts";
 import type { FetchContext } from "./types.ts";
@@ -23,9 +24,12 @@ import { fetchNodeRuntime } from "./nodejs-rt.ts";
 import { fetchPyright } from "./pyright.ts";
 import { fetchConfig } from "./config.ts";
 
-/** Default staging root — staging/ relative to the project root. */
-const DEFAULT_STAGING_ROOT = path.resolve(
-  new URL("../../staging", import.meta.url).pathname,
+/** Default staging root — staging/ relative to the project root.
+ *  Use fileURLToPath, not URL.pathname: on Windows the latter yields a
+ *  leading-slash path like "/C:/..." that path.resolve mis-reads, producing
+ *  a duplicated drive ("C:\C:\..."). */
+const DEFAULT_STAGING_ROOT = fileURLToPath(
+  new URL("../../staging", import.meta.url),
 );
 
 export interface StageAssetsOptions {
@@ -89,14 +93,18 @@ export async function stageAssets(opts: StageAssetsOptions): Promise<AssetManife
     fetchOpencodeCore(ctx).then(log("opencode-core")),
     fetchOpencodeTUI(ctx).then(log("tui")),
     fetchOhMyOpencode(ctx).then(log("oh-my-opencode")),
-    fetchJdtls(ctx).then(log("jdtls")),
+    // jdtls (Java LSP) is optional: eclipse.jdt.ls has no GitHub "latest"
+    // release, so this can 404. Skip rather than fail the whole build.
+    optional("jdtls", fetchJdtls(ctx).then(log("jdtls"))),
     fetchVolar(ctx).then(log("volar")),
     fetchTsserver(ctx).then(log("tsserver")),
     fetchFilesystemMcp(ctx).then(log("mcp-filesystem")),
     fetchAstGrep(ctx).then(log("ast-grep")),
     fetchJre21(ctx).then(log("jre21")),
     fetchPyright(ctx).then(log("pyright")),
-    fetchGopls(ctx).then(log("gopls")),
+    // gopls (Go LSP) is optional: built via `go install` only when a Go
+    // toolchain is present on the build machine; skip otherwise.
+    optional("gopls", fetchGopls(ctx).then(log("gopls"))),
     opts.skipNodeRuntime
       ? Promise.resolve([])
       : fetchNodeRuntime(ctx).then(log("node-lts")),
@@ -149,6 +157,20 @@ export async function stageAssets(opts: StageAssetsOptions): Promise<AssetManife
 // ---------------------------------------------------------------------------
 
 type FetchResult = Awaited<ReturnType<typeof fetchOpencodeCore>>;
+
+/**
+ * Wrap an optional (non-essential) fetcher so a failure logs a warning and
+ * yields no assets instead of aborting the whole build. Used for niche LSPs
+ * (jdtls, gopls) whose upstreams may be unavailable; core assets stay fatal.
+ */
+function optional(label: string, p: Promise<FetchResult>): Promise<FetchResult> {
+  return p.catch((err: unknown) => {
+    process.stderr.write(
+      `[stage] WARN: ${label} skipped — ${err instanceof Error ? err.message : String(err)}\n`,
+    );
+    return [] as FetchResult;
+  });
+}
 
 function log(label: string): (r: FetchResult) => FetchResult {
   return (r) => {

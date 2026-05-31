@@ -331,25 +331,37 @@ async function unpackArchive(
     return;
   }
 
-  if (asset.archive === "zip") {
-    // TODO(phase4-entry): spawn embedded unzip tool or use fflate.
+  // bsdtar ships with Windows 10+, Linux, and macOS and extracts BOTH .zip and
+  // .tar.gz (it auto-detects the format), giving one cross-platform code path.
+  const proc = Bun.spawn(["tar", "-xf", rawPath, "-C", destDir], {
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const code = await proc.exited;
+  if (code !== 0) {
+    const err = await new Response(proc.stderr).text();
     throw new Error(
-      `[bootstrap] zip unpacking not yet implemented for asset "${asset.id}". ` +
-        `See TODO(phase4-entry) in unpackArchive.`,
+      `[bootstrap] failed to extract ${asset.archive} asset "${asset.id}" ` +
+        `(tar exit ${code}): ${err.slice(0, 300)}`,
     );
   }
+}
 
-  if (asset.archive === "tar.gz") {
-    // TODO(phase4-entry): stream-decompress with node:zlib + tar parser.
-    throw new Error(
-      `[bootstrap] tar.gz unpacking not yet implemented for asset "${asset.id}". ` +
-        `See TODO(phase4-entry) in unpackArchive.`,
-    );
+/**
+ * If `dir` contains exactly one entry and it is a directory, hoist that inner
+ * directory's contents up one level. Upstream archives (Temurin JRE, Node.js,
+ * opencode) wrap everything in a single top-level folder; our own
+ * directory-asset tarballs store multiple entries at the root, so this is a
+ * no-op for them.
+ */
+async function flattenLoneTopDir(dir: string): Promise<void> {
+  const entries = await fs.readdir(dir, { withFileTypes: true });
+  if (entries.length !== 1 || !entries[0].isDirectory()) return;
+  const inner = path.join(dir, entries[0].name);
+  for (const name of await fs.readdir(inner)) {
+    await fs.rename(path.join(inner, name), path.join(dir, name));
   }
-
-  // Exhaustive narrowing guard.
-  const _: never = asset.archive;
-  throw new Error(`[bootstrap] Unknown archive type: ${_}`);
+  await fs.rm(inner, { recursive: true, force: true });
 }
 
 /**
@@ -389,22 +401,38 @@ async function extractAssets(
         );
       }
 
-      const dest = path.join(tmpRoot, asset.extractTo);
-      await fs.mkdir(path.dirname(dest), { recursive: true });
+      const buf = new Uint8Array(await blob.arrayBuffer());
 
-      const buf = await blob.arrayBuffer();
-      await fs.writeFile(dest, new Uint8Array(buf));
-
-      // On POSIX targets, mark executable bits for binary assets.
-      if (asset.executable && process.platform !== "win32") {
-        await fs.chmod(dest, 0o755);
-      }
-
-      // Unpack archive formats (zip/tar.gz) in-place.
       if (asset.archive && asset.archive !== "none") {
-        await unpackArchive(asset, dest, path.join(tmpRoot, path.dirname(asset.extractTo)));
+        // Write the archive to a scratch file, extract its contents into the
+        // asset's extractTo directory, then drop a single wrapping top dir.
+        const scratchDir = path.join(tmpRoot, ".archives");
+        await fs.mkdir(scratchDir, { recursive: true });
+        const safe = asset.id.replace(/[^a-zA-Z0-9_]/g, "_");
+        const archivePath = path.join(
+          scratchDir,
+          `${safe}.${asset.archive === "zip" ? "zip" : "tar.gz"}`,
+        );
+        await fs.writeFile(archivePath, buf);
+
+        const outDir = path.join(tmpRoot, asset.extractTo);
+        await fs.mkdir(outDir, { recursive: true });
+        await unpackArchive(asset, archivePath, outDir);
+        await fs.rm(archivePath, { force: true });
+        await flattenLoneTopDir(outDir);
+      } else {
+        // Plain file asset — write it directly at extractTo.
+        const dest = path.join(tmpRoot, asset.extractTo);
+        await fs.mkdir(path.dirname(dest), { recursive: true });
+        await fs.writeFile(dest, buf);
+        if (asset.executable && process.platform !== "win32") {
+          await fs.chmod(dest, 0o755);
+        }
       }
     }
+
+    // Remove the scratch archive directory before promoting the cache.
+    await fs.rm(path.join(tmpRoot, ".archives"), { recursive: true, force: true });
 
     // All files written and verified; atomically promote temp → final.
     // Remove any previously failed partial extraction that somehow got renamed.
@@ -436,13 +464,20 @@ function buildEnv(
     OPENCODE_DISABLE_LSP_DOWNLOAD: "true",
     // Resolved cache root for {env:OPENCODE_AIRGAP_CACHE} placeholders in opencode.json.
     OPENCODE_AIRGAP_CACHE: cacheRoot,
-    // Point opencode at the extracted default config so it loads without any
-    // user-side setup. A user can override this by setting OPENCODE_CONFIG
-    // themselves before launching the exe — their value takes precedence
-    // because we only set it when it is not already in the environment.
-    ...(process.env["OPENCODE_CONFIG"]
-      ? {}
-      : { OPENCODE_CONFIG: path.join(cacheRoot, "config", "opencode.json") }),
+    // Disable the oh-my-opencode plugin's PostHog telemetry. On an air-gapped
+    // host the outbound call to us.i.posthog.com cannot complete, so leaving it
+    // on stalls startup on DNS/TCP timeouts every run. These are the plugin's
+    // own published opt-out switches, so this just exercises its supported API.
+    OMO_DISABLE_POSTHOG: "1",
+    OMO_SEND_ANONYMOUS_TELEMETRY: "0",
+    OMO_CODEX_DISABLE_POSTHOG: "1",
+    OMO_CODEX_SEND_ANONYMOUS_TELEMETRY: "0",
+    // NOTE: we deliberately do NOT set OPENCODE_CONFIG here. Instead,
+    // seedUserConfig() copies the bundled default config into the user's
+    // ~/.config/opencode directory on first run (only when absent), so
+    // opencode resolves it from the standard location and any user edits in
+    // that directory are preserved. A user-set OPENCODE_CONFIG still wins
+    // because opencode honours it and we never override it.
   };
 
   const pathPrepends: string[] = [];
@@ -487,6 +522,93 @@ function buildEnv(
 }
 
 // ------------------------------------------------------------------
+// Step 11e — seed user config directory
+// ------------------------------------------------------------------
+
+/** Resolve opencode's config directory, mirroring its own XDG-based lookup. */
+function userConfigDir(): string {
+  const configHome =
+    process.env["XDG_CONFIG_HOME"] || path.join(os.homedir(), ".config");
+  return path.join(configHome, "opencode");
+}
+
+async function pathExists(p: string): Promise<boolean> {
+  try {
+    await fs.access(p);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Recursively copy files from srcDir into destDir, skipping any whose
+ * destination already exists. Existing user files are never overwritten.
+ */
+async function copyMissing(srcDir: string, destDir: string): Promise<void> {
+  let entries;
+  try {
+    entries = await fs.readdir(srcDir, { withFileTypes: true });
+  } catch {
+    return; // nothing bundled to seed
+  }
+  for (const entry of entries) {
+    const src = path.join(srcDir, entry.name);
+    const dest = path.join(destDir, entry.name);
+    if (entry.isDirectory()) {
+      await copyMissing(src, dest);
+    } else if (!(await pathExists(dest))) {
+      await fs.mkdir(path.dirname(dest), { recursive: true });
+      await fs.copyFile(src, dest);
+      process.stderr.write(`[bootstrap] seeded default config → ${dest}\n`);
+    }
+  }
+}
+
+/**
+ * On every run, ensure the user's ~/.config/opencode directory is seeded with
+ * the bundled default config. Files are copied only when absent, so user edits
+ * persist across runs and updates. Best-effort: a failure here must not block
+ * launching opencode.
+ */
+async function seedUserConfig(cacheRoot: string): Promise<void> {
+  const dest = userConfigDir();
+  try {
+    // 1. Bundled default opencode.json (and any other files under config/).
+    await copyMissing(path.join(cacheRoot, "config"), dest);
+    // 2. The oh-my-opencode plugin ships its own .opencode/command and
+    //    .opencode/skills; opencode auto-loads them from ~/.config/opencode.
+    //    copyMissing is a no-op if the plugin or these dirs are absent.
+    const pluginOpencodeDir = path.join(
+      cacheRoot,
+      "plugin",
+      "oh-my-opencode",
+      "node_modules",
+      "oh-my-opencode",
+      ".opencode",
+    );
+    await copyMissing(path.join(pluginOpencodeDir, "command"), path.join(dest, "command"));
+    await copyMissing(path.join(pluginOpencodeDir, "skills"), path.join(dest, "skills"));
+  } catch (err: unknown) {
+    process.stderr.write(
+      `[bootstrap] warning: could not seed default config: ${
+        err instanceof Error ? err.message : String(err)
+      }\n`,
+    );
+  }
+}
+
+/** Seed the user config dir, then assemble the bootstrap result. */
+async function buildResult(
+  cacheRoot: string,
+  assets: AssetEntry[],
+  extracted: boolean,
+): Promise<BootstrapResult> {
+  await seedUserConfig(cacheRoot);
+  return { cacheRoot, env: buildEnv(cacheRoot, assets), extracted };
+}
+
+// ------------------------------------------------------------------
 // Top-level bootstrap
 // ------------------------------------------------------------------
 
@@ -516,11 +638,7 @@ export async function bootstrap(
   // Fast path: check if the cache is already valid before taking the lock.
   // This is the common case on every run after the first.
   if (await verifyCacheIntegrity(cacheRoot, manifest.assets)) {
-    return {
-      cacheRoot,
-      env: buildEnv(cacheRoot, manifest.assets),
-      extracted: false,
-    };
+    return await buildResult(cacheRoot, manifest.assets, false);
   }
 
   // Slow path: we need to extract. Take the concurrency lock.
@@ -540,22 +658,14 @@ export async function bootstrap(
       );
     }
 
-    return {
-      cacheRoot,
-      env: buildEnv(cacheRoot, manifest.assets),
-      extracted: false,
-    };
+    return await buildResult(cacheRoot, manifest.assets, false);
   }
 
   // We hold the lock. Re-check integrity in case another process finished
   // between our first check and lock acquisition.
   try {
     if (await verifyCacheIntegrity(cacheRoot, manifest.assets)) {
-      return {
-        cacheRoot,
-        env: buildEnv(cacheRoot, manifest.assets),
-        extracted: false,
-      };
+      return await buildResult(cacheRoot, manifest.assets, false);
     }
 
     process.stderr.write(
@@ -564,11 +674,7 @@ export async function bootstrap(
     await extractAssets(cacheRoot, manifest.assets, embeddedFiles);
     process.stderr.write(`[bootstrap] Extraction complete.\n`);
 
-    return {
-      cacheRoot,
-      env: buildEnv(cacheRoot, manifest.assets),
-      extracted: true,
-    };
+    return await buildResult(cacheRoot, manifest.assets, true);
   } finally {
     await releaseLock(cacheRoot);
   }

@@ -56,8 +56,8 @@ export async function runBuild(opts: BuildOpts): Promise<void> {
   const manifest = await stageAssets({ target: opts.target, pinnedLock });
 
   // Phase 3 complete: fetchConfig() in stageAssets() stages templates/opencode.json
-  // → staging/config/opencode.json and adds it as a "config" AssetEntry. The
-  // bootstrap sets OPENCODE_CONFIG to the extracted path at runtime.
+  // → staging/config/opencode.json and adds it as a "config" AssetEntry. At
+  // runtime the bootstrap seeds it into ~/.config/opencode when absent.
 
   console.log(`compiling exe → ${opts.outfile}`);
   const exeOpts: BuildExeOptions = { target: opts.target, outfile: opts.outfile };
