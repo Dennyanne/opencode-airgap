@@ -29,6 +29,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Free disk on the self-hosted runner
+        # The heavy windows-build job extracts assets to %LOCALAPPDATA% which
+        # persists across runs on this single self-hosted box. Reclaim it before
+        # `bun install` so a full disk can't truncate the typescript install
+        # (which made spike3 report "tsserver not found").
+        run: |
+          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "$env:LOCALAPPDATA\opencode-airgap"
+          Write-Host "pre-run cleanup done"
+
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
@@ -64,3 +73,80 @@ jobs:
         if: ${{ !cancelled() }}
         working-directory: spikes/spike3-node-lsp
         run: .\run.ps1
+
+  # End-to-end: fetch every asset, compile the single exe (build), and exercise
+  # the rollback-safe update flow (update). Runs on the same self-hosted Windows
+  # runner, which has network access. GITHUB_TOKEN lifts the api.github.com rate
+  # limit so the GitHub-sourced assets resolve without 403s.
+  windows-build:
+    runs-on: [self-hosted, windows, x64]
+    defaults:
+      run:
+        shell: pwsh -ExecutionPolicy Bypass -Command ". '{0}'"
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: airbuild build (fetch + compile single exe)
+        run: bun run src/cli/index.ts build --target bun-windows-x64 --out dist/opencode-airgap.exe
+
+      - name: Smoke-run built exe (bootstrap extract + seed config)
+        # Non-fatal: this exercises the runtime bootstrap (extract hundreds of
+        # MB + seed config) but is not the core build/update contract under
+        # test, and opencode main is not yet wired into the exe entry.
+        continue-on-error: true
+        run: |
+          & .\dist\opencode-airgap.exe
+          if ($LASTEXITCODE -ne 0) { throw "built exe exited with code $LASTEXITCODE" }
+          Write-Host "bootstrap smoke OK"
+
+      - name: airbuild update (rebuild + write versions.lock + atomic replace)
+        run: bun run src/cli/index.ts update --target bun-windows-x64 --out dist/opencode-airgap.exe
+
+      - name: Upload exe + versions.lock
+        if: ${{ !cancelled() }}
+        # Non-fatal: artifact storage quota can be exhausted account-wide, which
+        # must not fail the build/update verification itself.
+        continue-on-error: true
+        uses: actions/upload-artifact@v4
+        with:
+          name: opencode-airgap-exe
+          path: |
+            dist/opencode-airgap.exe
+            dist/versions.lock
+          if-no-files-found: warn
+          retention-days: 14
+
+      - name: Free disk on the self-hosted runner
+        # The build downloads ~150 MB of assets twice and the smoke-run extracts
+        # them to %LOCALAPPDATA%, which persists across jobs/runs and would
+        # otherwise accumulate and starve later jobs (e.g. windows-spikes failing
+        # its `bun install`). Reclaim it so the runner stays healthy.
+        if: ${{ always() }}
+        run: |
+          foreach ($p in @(
+            "$env:LOCALAPPDATA\opencode-airgap",
+            "$env:USERPROFILE\.config\opencode",
+            "dist",
+            "staging\runtime", "staging\opencode-core", "staging\lsp",
+            "staging\mcp", "staging\plugin", "staging\tui", "staging\.embed"
+          )) {
+            Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $p
+          }
+          Write-Host "runner cleanup done"

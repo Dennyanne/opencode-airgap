@@ -66,8 +66,13 @@ async function installNpmPackage(
     );
   }
 
+  // --ignore-scripts: do not run package postinstall hooks during staging.
+  // oh-my-opencode's postinstall shells out to `opencode --version`, and other
+  // packages' install scripts could make outbound calls — neither is wanted on
+  // a build machine producing an air-gapped artifact. Prebuilt native deps
+  // (e.g. @ast-grep/napi) ship as optionalDependencies, not postinstall builds.
   const proc = Bun.spawn(
-    ["bun", "add", "--exact", ...packages],
+    ["bun", "add", "--exact", "--ignore-scripts", ...packages],
     {
       cwd: stagingDir,
       stdout: "pipe",
