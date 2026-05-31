@@ -16,7 +16,9 @@ if ((Get-ExecutionPolicy -Scope Process) -notin @('Bypass', 'Unrestricted')) {
 $ErrorActionPreference = "Stop"
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
-$RepoRoot = (Resolve-Path (Join-Path $ScriptDir ".." "..")).Path
+# Note: nest two 2-argument Join-Path calls — passing 3+ positional args to
+# Join-Path is PowerShell 7+ only and fails under Windows PowerShell 5.1.
+$RepoRoot = (Resolve-Path (Join-Path (Join-Path $ScriptDir "..") "..")).Path
 
 Write-Host "==================================================="
 Write-Host " Spike 3 — Node-LSP runtime decision (Windows)"
