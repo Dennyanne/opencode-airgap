@@ -9,6 +9,10 @@ staging/
 # Keep staging layout but not fetched binaries
 !staging/.gitkeep
 
+# Spike compiled payloads and build outputs
+spikes/*/payload/
+spikes/*/dist/
+
 # OMC runtime state — not part of the project source
 .omc/sessions/
 .omc/state/
