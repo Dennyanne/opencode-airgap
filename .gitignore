@@ -1,0 +1,15 @@
+node_modules/
+dist/
+staging/
+*.exe
+*.log
+.cache/
+.DS_Store
+
+# Keep staging layout but not fetched binaries
+!staging/.gitkeep
+
+# OMC runtime state — not part of the project source
+.omc/sessions/
+.omc/state/
+.omc/project-memory.json

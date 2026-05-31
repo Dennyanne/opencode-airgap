@@ -1,0 +1,104 @@
+{
+  "provider": {
+    "vllm": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "vLLM (air-gapped)",
+      "options": {
+        "baseURL": "{env:VLLM_BASE_URL}",
+        "apiKey": "{env:VLLM_API_KEY}"
+      },
+      "models": {
+        "{env:VLLM_MODEL}": {
+          "name": "vLLM model"
+        }
+      }
+    }
+  },
+  "model": {
+    "modelID": "{env:VLLM_MODEL}",
+    "providerID": "vllm"
+  },
+  "lsp": {
+    "java": {
+      "command": [
+        "{env:OPENCODE_AIRGAP_CACHE}/runtime/jre/bin/java",
+        "-Declipse.application=org.eclipse.jdt.ls.core.id1",
+        "-Dosgi.bundles.defaultStartLevel=4",
+        "-Declipse.product=org.eclipse.jdt.ls.core.product",
+        "-Dlog.level=ALL",
+        "-noverify",
+        "-Xmx1G",
+        "--add-modules=ALL-SYSTEM",
+        "--add-opens", "java.base/java.util=ALL-UNNAMED",
+        "--add-opens", "java.base/java.lang=ALL-UNNAMED",
+        "-jar", "{env:OPENCODE_AIRGAP_CACHE}/lsp/jdtls/plugins/org.eclipse.equinox.launcher_*.jar",
+        "-configuration", "{env:OPENCODE_AIRGAP_CACHE}/lsp/jdtls/config_win",
+        "-data", "{env:OPENCODE_AIRGAP_CACHE}/lsp/jdtls/workspace"
+      ],
+      "extensions": [".java"],
+      "env": {
+        "JAVA_HOME": "{env:OPENCODE_AIRGAP_CACHE}/runtime/jre"
+      }
+    },
+    "vue": {
+      "command": [
+        "{env:OPENCODE_AIRGAP_CACHE}/runtime/node/node",
+        "{env:OPENCODE_AIRGAP_CACHE}/lsp/volar/node_modules/@vue/language-server/bin/vue-language-server.js",
+        "--stdio"
+      ],
+      "extensions": [".vue"]
+    },
+    "typescript": {
+      "command": [
+        "{env:OPENCODE_AIRGAP_CACHE}/runtime/node/node",
+        "{env:OPENCODE_AIRGAP_CACHE}/lsp/tsserver/node_modules/typescript-language-server/lib/cli.mjs",
+        "--stdio",
+        "--tsserver-path", "{env:OPENCODE_AIRGAP_CACHE}/lsp/tsserver/node_modules/typescript/lib/tsserver.js"
+      ],
+      "extensions": [".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs"]
+    },
+    "python": {
+      "command": [
+        "{env:OPENCODE_AIRGAP_CACHE}/lsp/pyright/pyright-langserver",
+        "--stdio"
+      ],
+      "extensions": [".py"]
+    },
+    "go": {
+      "command": [
+        "{env:OPENCODE_AIRGAP_CACHE}/lsp/gopls/gopls"
+      ],
+      "extensions": [".go"]
+    }
+  },
+  "mcp": {
+    "filesystem": {
+      "type": "local",
+      "command": [
+        "{env:OPENCODE_AIRGAP_CACHE}/runtime/node/node",
+        "{env:OPENCODE_AIRGAP_CACHE}/mcp/filesystem/node_modules/@modelcontextprotocol/server-filesystem/dist/index.js",
+        "."
+      ],
+      "enabled": true,
+      "environment": {}
+    },
+    "websearch": {
+      "type": "local",
+      "command": [],
+      "enabled": false,
+      "environment": {}
+    },
+    "context7": {
+      "type": "local",
+      "command": [],
+      "enabled": false,
+      "environment": {}
+    },
+    "grep_app": {
+      "type": "local",
+      "command": [],
+      "enabled": false,
+      "environment": {}
+    }
+  }
+}

@@ -1,0 +1,23 @@
+{
+  "name": "opencode-airgap",
+  "version": "0.1.0",
+  "description": "Build/update tool that packages opencode + oh-my-opencode into a single self-extracting Windows exe for air-gapped networks running a vLLM (OpenAI-compatible) backend.",
+  "private": true,
+  "type": "module",
+  "bin": {
+    "airbuild": "./src/cli/index.ts"
+  },
+  "scripts": {
+    "airbuild": "bun run src/cli/index.ts",
+    "build": "bun run src/cli/index.ts build",
+    "update": "bun run src/cli/index.ts update",
+    "typecheck": "tsc --noEmit"
+  },
+  "engines": {
+    "bun": ">=1.1.0"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5.5.0"
+  }
+}
