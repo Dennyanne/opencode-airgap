@@ -331,25 +331,37 @@ async function unpackArchive(
     return;
   }
 
-  if (asset.archive === "zip") {
-    // TODO(phase4-entry): spawn embedded unzip tool or use fflate.
+  // bsdtar ships with Windows 10+, Linux, and macOS and extracts BOTH .zip and
+  // .tar.gz (it auto-detects the format), giving one cross-platform code path.
+  const proc = Bun.spawn(["tar", "-xf", rawPath, "-C", destDir], {
+    stdout: "pipe",
+    stderr: "pipe",
+  });
+  const code = await proc.exited;
+  if (code !== 0) {
+    const err = await new Response(proc.stderr).text();
     throw new Error(
-      `[bootstrap] zip unpacking not yet implemented for asset "${asset.id}". ` +
-        `See TODO(phase4-entry) in unpackArchive.`,
+      `[bootstrap] failed to extract ${asset.archive} asset "${asset.id}" ` +
+        `(tar exit ${code}): ${err.slice(0, 300)}`,
     );
   }
+}
 
-  if (asset.archive === "tar.gz") {
-    // TODO(phase4-entry): stream-decompress with node:zlib + tar parser.
-    throw new Error(
-      `[bootstrap] tar.gz unpacking not yet implemented for asset "${asset.id}". ` +
-        `See TODO(phase4-entry) in unpackArchive.`,
-    );
+/**
+ * If `dir` contains exactly one entry and it is a directory, hoist that inner
+ * directory's contents up one level. Upstream archives (Temurin JRE, Node.js,
+ * opencode) wrap everything in a single top-level folder; our own
+ * directory-asset tarballs store multiple entries at the root, so this is a
+ * no-op for them.
+ */
+async function flattenLoneTopDir(dir: string): Promise<void> {
+  const entries = await fs.readdir(dir, { withFileTypes: true });
+  if (entries.length !== 1 || !entries[0].isDirectory()) return;
+  const inner = path.join(dir, entries[0].name);
+  for (const name of await fs.readdir(inner)) {
+    await fs.rename(path.join(inner, name), path.join(dir, name));
   }
-
-  // Exhaustive narrowing guard.
-  const _: never = asset.archive;
-  throw new Error(`[bootstrap] Unknown archive type: ${_}`);
+  await fs.rm(inner, { recursive: true, force: true });
 }
 
 /**
@@ -389,22 +401,38 @@ async function extractAssets(
         );
       }
 
-      const dest = path.join(tmpRoot, asset.extractTo);
-      await fs.mkdir(path.dirname(dest), { recursive: true });
+      const buf = new Uint8Array(await blob.arrayBuffer());
 
-      const buf = await blob.arrayBuffer();
-      await fs.writeFile(dest, new Uint8Array(buf));
-
-      // On POSIX targets, mark executable bits for binary assets.
-      if (asset.executable && process.platform !== "win32") {
-        await fs.chmod(dest, 0o755);
-      }
-
-      // Unpack archive formats (zip/tar.gz) in-place.
       if (asset.archive && asset.archive !== "none") {
-        await unpackArchive(asset, dest, path.join(tmpRoot, path.dirname(asset.extractTo)));
+        // Write the archive to a scratch file, extract its contents into the
+        // asset's extractTo directory, then drop a single wrapping top dir.
+        const scratchDir = path.join(tmpRoot, ".archives");
+        await fs.mkdir(scratchDir, { recursive: true });
+        const safe = asset.id.replace(/[^a-zA-Z0-9_]/g, "_");
+        const archivePath = path.join(
+          scratchDir,
+          `${safe}.${asset.archive === "zip" ? "zip" : "tar.gz"}`,
+        );
+        await fs.writeFile(archivePath, buf);
+
+        const outDir = path.join(tmpRoot, asset.extractTo);
+        await fs.mkdir(outDir, { recursive: true });
+        await unpackArchive(asset, archivePath, outDir);
+        await fs.rm(archivePath, { force: true });
+        await flattenLoneTopDir(outDir);
+      } else {
+        // Plain file asset — write it directly at extractTo.
+        const dest = path.join(tmpRoot, asset.extractTo);
+        await fs.mkdir(path.dirname(dest), { recursive: true });
+        await fs.writeFile(dest, buf);
+        if (asset.executable && process.platform !== "win32") {
+          await fs.chmod(dest, 0o755);
+        }
       }
     }
+
+    // Remove the scratch archive directory before promoting the cache.
+    await fs.rm(path.join(tmpRoot, ".archives"), { recursive: true, force: true });
 
     // All files written and verified; atomically promote temp → final.
     // Remove any previously failed partial extraction that somehow got renamed.
