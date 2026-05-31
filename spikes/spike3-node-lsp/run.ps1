@@ -24,13 +24,12 @@ Write-Host "==================================================="
 Write-Host " Spike 3 — Node-LSP runtime decision (Windows)"
 Write-Host "==================================================="
 
-# Locate tsserver
-$TsServer = Join-Path $RepoRoot "node_modules\.bin\tsserver.cmd"
+# Locate tsserver. Check the actual JS entry the LSP probe runs below
+# (node_modules\typescript\bin\tsserver), not a node_modules\.bin shim —
+# bun does not reliably create a .bin\tsserver(.cmd) shim on Windows.
+$TsServer = Join-Path $RepoRoot "node_modules\typescript\bin\tsserver"
 if (-Not (Test-Path $TsServer)) {
-    $TsServer = Join-Path $RepoRoot "node_modules\.bin\tsserver"
-}
-if (-Not (Test-Path $TsServer)) {
-    Write-Error "tsserver not found. Run: cd $RepoRoot; bun install"
+    Write-Error "tsserver not found at $TsServer. Run: cd $RepoRoot; bun install"
 }
 
 # Note: avoid the `?.` null-conditional operator here — it is PowerShell 7.1+
