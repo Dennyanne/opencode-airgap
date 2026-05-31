@@ -365,6 +365,37 @@ async function flattenLoneTopDir(dir: string): Promise<void> {
 }
 
 /**
+ * Promote the verified temp extraction to the final cache root.
+ *
+ * On Windows, files just written by the extraction (e.g. the JRE's java.exe,
+ * Node's node.exe) are frequently held by antivirus real-time scanning or the
+ * search indexer for a short window, so removing the previous cache and
+ * renaming the temp dir can fail transiently with EPERM/EACCES/EBUSY. Retry
+ * with exponential backoff to ride those out; surface any non-transient error.
+ */
+async function promoteCache(tmpRoot: string, cacheRoot: string): Promise<void> {
+  const transient = new Set(["EPERM", "EACCES", "EBUSY", "ENOTEMPTY"]);
+  let lastErr: unknown;
+  for (let attempt = 0; attempt < 6; attempt++) {
+    try {
+      // Remove any previously failed/partial cache, then move temp into place.
+      await fs.rm(cacheRoot, { recursive: true, force: true });
+      await fs.rename(tmpRoot, cacheRoot);
+      return;
+    } catch (err: unknown) {
+      lastErr = err;
+      const code =
+        err && typeof err === "object" && "code" in err
+          ? (err as { code?: string }).code
+          : undefined;
+      if (!code || !transient.has(code)) throw err;
+      await sleep(250 * Math.pow(2, attempt)); // 0.25s, 0.5s … ~8s
+    }
+  }
+  throw lastErr;
+}
+
+/**
  * Extract all assets into a temp sibling directory, verify checksums, then
  * atomically rename to the final cache root, and write COMPLETE_SENTINEL.
  *
@@ -435,9 +466,7 @@ async function extractAssets(
     await fs.rm(path.join(tmpRoot, ".archives"), { recursive: true, force: true });
 
     // All files written and verified; atomically promote temp → final.
-    // Remove any previously failed partial extraction that somehow got renamed.
-    await fs.rm(cacheRoot, { recursive: true, force: true });
-    await fs.rename(tmpRoot, cacheRoot);
+    await promoteCache(tmpRoot, cacheRoot);
 
     // Write sentinel LAST — this is the signal that the cache is trustworthy.
     await fs.writeFile(sentinelPath(cacheRoot), String(Date.now()));
