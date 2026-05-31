@@ -29,6 +29,15 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
+      - name: Free disk on the self-hosted runner
+        # The heavy windows-build job extracts assets to %LOCALAPPDATA% which
+        # persists across runs on this single self-hosted box. Reclaim it before
+        # `bun install` so a full disk can't truncate the typescript install
+        # (which made spike3 report "tsserver not found").
+        run: |
+          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "$env:LOCALAPPDATA\opencode-airgap"
+          Write-Host "pre-run cleanup done"
+
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
         with:
@@ -123,3 +132,21 @@ jobs:
             dist/versions.lock
           if-no-files-found: warn
           retention-days: 14
+
+      - name: Free disk on the self-hosted runner
+        # The build downloads ~150 MB of assets twice and the smoke-run extracts
+        # them to %LOCALAPPDATA%, which persists across jobs/runs and would
+        # otherwise accumulate and starve later jobs (e.g. windows-spikes failing
+        # its `bun install`). Reclaim it so the runner stays healthy.
+        if: ${{ always() }}
+        run: |
+          foreach ($p in @(
+            "$env:LOCALAPPDATA\opencode-airgap",
+            "$env:USERPROFILE\.config\opencode",
+            "dist",
+            "staging\runtime", "staging\opencode-core", "staging\lsp",
+            "staging\mcp", "staging\plugin", "staging\tui", "staging\.embed"
+          )) {
+            Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $p
+          }
+          Write-Host "runner cleanup done"
