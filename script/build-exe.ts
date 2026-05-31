@@ -41,6 +41,56 @@ const STAGING_DIR = path.resolve(import.meta.dir, "..", "staging");
 const GENERATED_ENTRY = path.join(STAGING_DIR, ".entry.generated.ts");
 
 /**
+ * Bun can only embed single FILES via `import x with { type: "file" }`. Several
+ * assets (npm packages, the oh-my-opencode plugin) are staged as DIRECTORIES,
+ * so we pack each directory asset into a single .tar.gz under staging/.embed/
+ * and rewrite its manifest entry (embedPath/archive/digest/bytes) to point at
+ * that archive. Bootstrap unpacks `archive: "tar.gz"` assets into extractTo at
+ * runtime. File assets (already-archived upstream downloads) are left as-is.
+ *
+ * tar is available on all build hosts (Windows 10+ ships bsdtar; Linux/macOS
+ * have it natively). Members are stored relative to the directory root so they
+ * extract straight into extractTo.
+ */
+async function packDirectoryAssets(manifest: AssetManifest): Promise<void> {
+  const embedDir = path.join(STAGING_DIR, ".embed");
+  await fs.mkdir(embedDir, { recursive: true });
+
+  for (const asset of manifest.assets) {
+    const abs = path.resolve(asset.embedPath);
+    let isDir = false;
+    try {
+      isDir = (await fs.stat(abs)).isDirectory();
+    } catch {
+      continue; // missing path; stagingAssetsPresent will catch it
+    }
+    if (!isDir) continue;
+
+    const safe = asset.id.replace(/[^a-zA-Z0-9_]/g, "_");
+    const tarball = path.join(embedDir, `${safe}.tar.gz`);
+    const proc = Bun.spawn(["tar", "-czf", tarball, "-C", abs, "."], {
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const code = await proc.exited;
+    if (code !== 0) {
+      const err = await new Response(proc.stderr).text();
+      throw new Error(
+        `[build-exe] failed to archive directory asset "${asset.id}" ` +
+          `(tar exit ${code}): ${err.slice(0, 300)}`,
+      );
+    }
+
+    // Rewrite the entry so the embedded blob, inlined manifest, and runtime
+    // extraction all agree on the archived form.
+    asset.embedPath = tarball;
+    asset.archive = "tar.gz";
+    asset.digest = await computeDigest(tarball);
+    asset.bytes = (await fs.stat(tarball)).size;
+  }
+}
+
+/**
  * Generate the runtime entry TypeScript module and write it to
  * staging/.entry.generated.ts.
  *
@@ -54,7 +104,6 @@ const GENERATED_ENTRY = path.join(STAGING_DIR, ".entry.generated.ts");
  */
 async function generateEntry(manifest: AssetManifest): Promise<string> {
   await fs.mkdir(STAGING_DIR, { recursive: true });
-
   // Build the import block.  Each asset gets a unique identifier derived from
   // its id with non-identifier characters replaced by underscores.
   const importLines: string[] = [];
@@ -177,6 +226,9 @@ export async function buildExe(
   manifest: AssetManifest,
   opts: BuildExeOptions,
 ): Promise<{ outfile: string }> {
+  // Step 0: pack directory assets into single archives so Bun can embed them.
+  await packDirectoryAssets(manifest);
+
   // Step 1: generate the entry module.
   const entryFile = await generateEntry(manifest);
 
