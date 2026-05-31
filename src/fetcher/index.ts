@@ -6,6 +6,7 @@
  */
 
 import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 import type { AssetManifest, VersionsLock, TargetTriple } from "../embed/manifest.ts";
 import { TOOL_VERSION } from "../cli/version.ts";
 import type { FetchContext } from "./types.ts";
@@ -23,9 +24,12 @@ import { fetchNodeRuntime } from "./nodejs-rt.ts";
 import { fetchPyright } from "./pyright.ts";
 import { fetchConfig } from "./config.ts";
 
-/** Default staging root — staging/ relative to the project root. */
-const DEFAULT_STAGING_ROOT = path.resolve(
-  new URL("../../staging", import.meta.url).pathname,
+/** Default staging root — staging/ relative to the project root.
+ *  Use fileURLToPath, not URL.pathname: on Windows the latter yields a
+ *  leading-slash path like "/C:/..." that path.resolve mis-reads, producing
+ *  a duplicated drive ("C:\C:\..."). */
+const DEFAULT_STAGING_ROOT = fileURLToPath(
+  new URL("../../staging", import.meta.url),
 );
 
 export interface StageAssetsOptions {
