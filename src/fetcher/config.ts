@@ -1,8 +1,9 @@
 /**
  * Phase 3 — config synthesis.
  * Copies templates/opencode.json into the staging directory so it is embedded
- * in the exe and extracted at runtime. The bootstrap sets OPENCODE_CONFIG to
- * the extracted path so opencode loads it as the default config.
+ * in the exe and extracted at runtime. On first run the bootstrap seeds the
+ * extracted default into the user's ~/.config/opencode directory (only when
+ * absent), so opencode loads it from the standard location.
  */
 
 import * as fs from "node:fs/promises";
@@ -24,7 +25,8 @@ export const CONFIG_EXTRACT_TO = "config/opencode.json";
 /**
  * Stage the embedded default opencode.json config.
  * Copies templates/opencode.json → staging/config/opencode.json.
- * At runtime, bootstrap extracts it and sets OPENCODE_CONFIG to its path.
+ * At runtime, bootstrap extracts it and seeds it into ~/.config/opencode
+ * when that file does not already exist.
  */
 export async function fetchConfig(ctx: FetchContext): Promise<FetchResult> {
   const destDir = path.join(ctx.stagingRoot, "config");

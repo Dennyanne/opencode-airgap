@@ -436,13 +436,12 @@ function buildEnv(
     OPENCODE_DISABLE_LSP_DOWNLOAD: "true",
     // Resolved cache root for {env:OPENCODE_AIRGAP_CACHE} placeholders in opencode.json.
     OPENCODE_AIRGAP_CACHE: cacheRoot,
-    // Point opencode at the extracted default config so it loads without any
-    // user-side setup. A user can override this by setting OPENCODE_CONFIG
-    // themselves before launching the exe — their value takes precedence
-    // because we only set it when it is not already in the environment.
-    ...(process.env["OPENCODE_CONFIG"]
-      ? {}
-      : { OPENCODE_CONFIG: path.join(cacheRoot, "config", "opencode.json") }),
+    // NOTE: we deliberately do NOT set OPENCODE_CONFIG here. Instead,
+    // seedUserConfig() copies the bundled default config into the user's
+    // ~/.config/opencode directory on first run (only when absent), so
+    // opencode resolves it from the standard location and any user edits in
+    // that directory are preserved. A user-set OPENCODE_CONFIG still wins
+    // because opencode honours it and we never override it.
   };
 
   const pathPrepends: string[] = [];
@@ -487,6 +486,78 @@ function buildEnv(
 }
 
 // ------------------------------------------------------------------
+// Step 11e — seed user config directory
+// ------------------------------------------------------------------
+
+/** Resolve opencode's config directory, mirroring its own XDG-based lookup. */
+function userConfigDir(): string {
+  const configHome =
+    process.env["XDG_CONFIG_HOME"] || path.join(os.homedir(), ".config");
+  return path.join(configHome, "opencode");
+}
+
+async function pathExists(p: string): Promise<boolean> {
+  try {
+    await fs.access(p);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Recursively copy files from srcDir into destDir, skipping any whose
+ * destination already exists. Existing user files are never overwritten.
+ */
+async function copyMissing(srcDir: string, destDir: string): Promise<void> {
+  let entries;
+  try {
+    entries = await fs.readdir(srcDir, { withFileTypes: true });
+  } catch {
+    return; // nothing bundled to seed
+  }
+  for (const entry of entries) {
+    const src = path.join(srcDir, entry.name);
+    const dest = path.join(destDir, entry.name);
+    if (entry.isDirectory()) {
+      await copyMissing(src, dest);
+    } else if (!(await pathExists(dest))) {
+      await fs.mkdir(path.dirname(dest), { recursive: true });
+      await fs.copyFile(src, dest);
+      process.stderr.write(`[bootstrap] seeded default config → ${dest}\n`);
+    }
+  }
+}
+
+/**
+ * On every run, ensure the user's ~/.config/opencode directory is seeded with
+ * the bundled default config. Files are copied only when absent, so user edits
+ * persist across runs and updates. Best-effort: a failure here must not block
+ * launching opencode.
+ */
+async function seedUserConfig(cacheRoot: string): Promise<void> {
+  try {
+    await copyMissing(path.join(cacheRoot, "config"), userConfigDir());
+  } catch (err: unknown) {
+    process.stderr.write(
+      `[bootstrap] warning: could not seed default config: ${
+        err instanceof Error ? err.message : String(err)
+      }\n`,
+    );
+  }
+}
+
+/** Seed the user config dir, then assemble the bootstrap result. */
+async function buildResult(
+  cacheRoot: string,
+  assets: AssetEntry[],
+  extracted: boolean,
+): Promise<BootstrapResult> {
+  await seedUserConfig(cacheRoot);
+  return { cacheRoot, env: buildEnv(cacheRoot, assets), extracted };
+}
+
+// ------------------------------------------------------------------
 // Top-level bootstrap
 // ------------------------------------------------------------------
 
@@ -516,11 +587,7 @@ export async function bootstrap(
   // Fast path: check if the cache is already valid before taking the lock.
   // This is the common case on every run after the first.
   if (await verifyCacheIntegrity(cacheRoot, manifest.assets)) {
-    return {
-      cacheRoot,
-      env: buildEnv(cacheRoot, manifest.assets),
-      extracted: false,
-    };
+    return await buildResult(cacheRoot, manifest.assets, false);
   }
 
   // Slow path: we need to extract. Take the concurrency lock.
@@ -540,22 +607,14 @@ export async function bootstrap(
       );
     }
 
-    return {
-      cacheRoot,
-      env: buildEnv(cacheRoot, manifest.assets),
-      extracted: false,
-    };
+    return await buildResult(cacheRoot, manifest.assets, false);
   }
 
   // We hold the lock. Re-check integrity in case another process finished
   // between our first check and lock acquisition.
   try {
     if (await verifyCacheIntegrity(cacheRoot, manifest.assets)) {
-      return {
-        cacheRoot,
-        env: buildEnv(cacheRoot, manifest.assets),
-        extracted: false,
-      };
+      return await buildResult(cacheRoot, manifest.assets, false);
     }
 
     process.stderr.write(
@@ -564,11 +623,7 @@ export async function bootstrap(
     await extractAssets(cacheRoot, manifest.assets, embeddedFiles);
     process.stderr.write(`[bootstrap] Extraction complete.\n`);
 
-    return {
-      cacheRoot,
-      env: buildEnv(cacheRoot, manifest.assets),
-      extracted: true,
-    };
+    return await buildResult(cacheRoot, manifest.assets, true);
   } finally {
     await releaseLock(cacheRoot);
   }
