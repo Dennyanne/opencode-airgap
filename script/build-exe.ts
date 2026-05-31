@@ -116,8 +116,13 @@ async function generateEntry(manifest: AssetManifest): Promise<string> {
     const rel = path.relative(STAGING_DIR, path.resolve(asset.embedPath));
     // Use forward slashes for the import specifier regardless of OS.
     const spec = rel.split(path.sep).join("/");
+    // A `with { type: "file" }` import resolves to the embedded file's PATH
+    // (a string), not its bytes — so we must read it via Bun.file(), which is
+    // a Blob whose .arrayBuffer() yields the real embedded contents. Wrapping
+    // the path string in `new Blob([...])` would embed the path text instead,
+    // failing the runtime digest check.
     importLines.push(`import ${ident} from "./${spec}" with { type: "file" };`);
-    mapEntries.push(`  embeddedFiles.set(${JSON.stringify(asset.id)}, new Blob([${ident}]));`);
+    mapEntries.push(`  embeddedFiles.set(${JSON.stringify(asset.id)}, Bun.file(${ident}));`);
   }
 
   // Manifest JSON is inlined as a string literal so it is part of the exe.
