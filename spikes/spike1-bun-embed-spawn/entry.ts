@@ -61,9 +61,12 @@ async function main() {
   console.log("  spawning extracted binary...");
 
   // On macOS smoke test we embedded /bin/echo, so pass a greeting arg.
-  // On Windows the user embeds hello-world.exe or where.exe with no args
-  // needed — but we pass a harmless arg just in case.
-  const spawnArgs: string[] = IS_WINDOWS ? [] : ["hello from spike1"];
+  // On Windows the payload is where.exe. Called with NO args it prints
+  // "ERROR: The syntax of the command is incorrect." to stderr and exits 2,
+  // which the verdict below would wrongly read as a FAIL. Passing a real
+  // search term ("where" itself, always on PATH) makes it print a path to
+  // stdout and exit 0 — exercising both the spawn and stdout-capture paths.
+  const spawnArgs: string[] = IS_WINDOWS ? ["where"] : ["hello from spike1"];
   const result = Bun.spawnSync([destPath, ...spawnArgs], {
     stdout: "pipe",
     stderr: "pipe",
