@@ -106,15 +106,15 @@ jobs:
       - name: airbuild build (fetch + compile single exe)
         run: bun run src/cli/index.ts build --target bun-windows-x64 --out dist/opencode-airgap.exe
 
-      - name: Smoke-run built exe (bootstrap extract + seed config)
-        # Non-fatal: this exercises the runtime bootstrap (extract hundreds of
-        # MB + seed config) but is not the core build/update contract under
-        # test, and opencode main is not yet wired into the exe entry.
+      - name: Smoke-run built exe (bootstrap extract + launch opencode --version)
+        # Non-fatal: exercises the full runtime path — extract hundreds of MB,
+        # seed config, then spawn the extracted opencode binary. Pass --version
+        # so it doesn't launch the interactive TUI (no TTY on the runner).
         continue-on-error: true
         run: |
-          & .\dist\opencode-airgap.exe
+          & .\dist\opencode-airgap.exe --version
           if ($LASTEXITCODE -ne 0) { throw "built exe exited with code $LASTEXITCODE" }
-          Write-Host "bootstrap smoke OK"
+          Write-Host "bootstrap + launch smoke OK"
 
       - name: airbuild update (rebuild + write versions.lock + atomic replace)
         run: bun run src/cli/index.ts update --target bun-windows-x64 --out dist/opencode-airgap.exe
