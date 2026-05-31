@@ -208,9 +208,11 @@ exe 실행
   ├─ ~/.config/opencode 시딩 (없을 때만 복사 — 사용자 편집 보존)
   │     기본 opencode.json + 플러그인의 .opencode/command·skills
   │
-  └─ 환경 변수 주입 후 opencode 위임
-       JAVA_HOME, OPENCODE_AIRGAP_CACHE, OPENCODE_DISABLE_LSP_DOWNLOAD=true, PATH,
-       OMO_DISABLE_POSTHOG=1 외 (oh-my-opencode 텔레메트리 차단 — 폐쇄망 행 방지)
+  ├─ 환경 변수 주입 (opencode에 전달)
+  │     JAVA_HOME, OPENCODE_AIRGAP_CACHE, OPENCODE_DISABLE_LSP_DOWNLOAD=true, PATH,
+  │     OMO_DISABLE_POSTHOG=1 외 (oh-my-opencode 텔레메트리 차단 — 폐쇄망 행 방지)
+  │
+  └─ 추출된 opencode 바이너리 spawn (CLI 인자·stdio 전달, 종료 코드 전파)
 ```
 
 ### 재현 가능한 빌드 (`versions.lock`)
@@ -336,19 +338,17 @@ oh-my-opencode 내장 MCP 중 외부 인터넷이 필요한 3종은 `enabled: fa
 | Phase 4 | 단일 exe 컴파일 (`bun build --compile`) | ✅ 완료 — Windows CI에서 실자산 빌드 검증 |
 | Phase 5 | `airbuild update` + 롤백 | ✅ 완료 |
 | Phase 6 | 검증 하니스 (AC1~AC13) | ✅ 완료 (`script/verify/`) |
-| Phase 7 | 런타임 opencode 기동 (추출된 opencode 바이너리 spawn) | ⬜ 진행 예정 |
+| Phase 7 | 런타임 opencode 기동 (추출된 opencode 바이너리 spawn) | ✅ 완료 |
 
-**현재 동작:** 인터넷 머신에서 `airbuild build`/`update`가 모든 자산을 받아 단일 exe로 컴파일하고,
-폐쇄망에서 exe 실행 시 부트스트랩이 자산을 캐시로 추출·검증하고 환경을 구성합니다.
-
-**다음 단계 (Phase 7):** 부트스트랩이 추출된 opencode 바이너리를 실제로 spawn하도록 엔트리를 연결합니다.
-현재 exe는 부트스트랩 완료까지 수행하며, opencode 본체 기동은 아직 연결되지 않았습니다.
+**현재 동작 (엔드투엔드):** 인터넷 머신에서 `airbuild build`/`update`가 모든 자산을 받아 단일 exe로
+컴파일하고, 폐쇄망에서 exe 실행 시 부트스트랩이 자산을 캐시로 추출·검증하고 환경을 구성한 뒤
+**추출된 opencode 바이너리를 그대로 spawn**합니다(CLI 인자·stdio 전달). 즉 `opencode-airgap.exe`는
+폐쇄망용 opencode 그 자체로 동작합니다.
 
 ---
 
 ## 알려진 제약 및 주의사항
 
-- **opencode 본체 기동 미연결 (Phase 7)**: 현재 exe는 부트스트랩(자산 추출·검증·환경 구성·설정 시딩)까지 수행하고 종료합니다. 추출된 opencode 바이너리를 실제로 spawn하는 단계는 아직 연결되지 않았습니다.
 - **선택적 LSP 누락**: jdtls(Java)는 eclipse.jdt.ls가 GitHub 릴리스를 제공하지 않아 기본 빌드에서 빠집니다. gopls(Go)는 빌드 머신에 Go 툴체인이 있을 때만 포함됩니다. 둘 다 없어도 빌드는 성공하며 해당 언어 LSP만 비활성화됩니다.
 - **exe 아이콘/메타데이터**: **Windows 호스트에서 빌드하면 아이콘 및 버전 정보(`VERSIONINFO`) 삽입이 가능합니다.** macOS/Linux에서 크로스 컴파일 시에는 Bun이 이를 지원하지 않으므로, 필요한 경우 빌드 후 `rcedit`으로 별도 처리하거나 Windows 빌드 호스트를 사용하세요.
 - **AV/SmartScreen 차단 리스크**: 미서명 대용량 자기추출 exe는 기업 PC의 Windows Defender SmartScreen이나 엔드포인트 AV에 의해 차단될 수 있습니다. 코드 서명을 적용하거나 사내 AV 허용 목록에 등록하는 절차가 필요할 수 있습니다. (AV가 갓 추출된 바이너리를 잠그면 첫 실행 시 일시적 `EPERM`이 날 수 있어, 부트스트랩은 캐시 승격을 백오프 재시도합니다.)

@@ -33,6 +33,11 @@ export interface BootstrapResult {
   env: Record<string, string>;
   /** True if extraction ran during this invocation; false if cache was valid. */
   extracted: boolean;
+  /**
+   * Absolute path to the extracted opencode executable to spawn, or "" if the
+   * opencode-core asset is absent / its binary could not be located.
+   */
+  opencodeBinary: string;
 }
 
 // ------------------------------------------------------------------
@@ -628,13 +633,46 @@ async function seedUserConfig(cacheRoot: string): Promise<void> {
 }
 
 /** Seed the user config dir, then assemble the bootstrap result. */
+/**
+ * Locate the extracted opencode executable under the cache root. Uses the
+ * opencode-core asset's extractTo directory and the platform binary name, with
+ * a one-level recursive fallback in case the release archive nests the binary.
+ * Returns "" if the asset is missing or no binary is found.
+ */
+async function resolveOpencodeBinary(
+  cacheRoot: string,
+  assets: AssetEntry[],
+): Promise<string> {
+  const core = assets.find((a) => a.kind === "opencode-core");
+  if (!core) return "";
+  const binName = process.platform === "win32" ? "opencode.exe" : "opencode";
+  const root = path.join(cacheRoot, core.extractTo);
+
+  const direct = path.join(root, binName);
+  if (await pathExists(direct)) return direct;
+
+  // Fallback: search one directory level deep.
+  try {
+    for (const entry of await fs.readdir(root, { withFileTypes: true })) {
+      if (entry.isDirectory()) {
+        const nested = path.join(root, entry.name, binName);
+        if (await pathExists(nested)) return nested;
+      }
+    }
+  } catch {
+    // root missing — fall through
+  }
+  return "";
+}
+
 async function buildResult(
   cacheRoot: string,
   assets: AssetEntry[],
   extracted: boolean,
 ): Promise<BootstrapResult> {
   await seedUserConfig(cacheRoot);
-  return { cacheRoot, env: buildEnv(cacheRoot, assets), extracted };
+  const opencodeBinary = await resolveOpencodeBinary(cacheRoot, assets);
+  return { cacheRoot, env: buildEnv(cacheRoot, assets), extracted, opencodeBinary };
 }
 
 // ------------------------------------------------------------------
