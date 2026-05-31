@@ -15,6 +15,16 @@ jobs:
   windows-spikes:
     runs-on: [self-hosted, windows, x64]
 
+    # Run every step under PowerShell 7 with an explicit Bypass execution
+    # policy. Bypass keeps GitHub's generated step scripts loadable on a
+    # runner whose machine policy is Restricted, and — because the spike
+    # run.ps1 scripts only re-invoke through Windows PowerShell 5.1 when the
+    # process-scope policy is NOT Bypass/Unrestricted — it makes them run
+    # directly under pwsh 7 instead of downgrading to 5.1.
+    defaults:
+      run:
+        shell: pwsh -ExecutionPolicy Bypass -Command ". '{0}'"
+
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -30,11 +40,9 @@ jobs:
           node-version: lts/*
 
       - name: Install dependencies
-        shell: pwsh
         run: bun install --frozen-lockfile
 
       - name: Typecheck
-        shell: pwsh
         run: bun run typecheck
 
       # --- Spikes -------------------------------------------------------
@@ -44,18 +52,15 @@ jobs:
 
       - name: Spike 1 — Bun embed/spawn
         if: ${{ !cancelled() }}
-        shell: pwsh
         working-directory: spikes/spike1-bun-embed-spawn
         run: .\run.ps1
 
       - name: Spike 2 — JRE embed/extract
         if: ${{ !cancelled() }}
-        shell: pwsh
         working-directory: spikes/spike2-jre-extract
         run: .\run.ps1
 
       - name: Spike 3 — Node-LSP runtime
         if: ${{ !cancelled() }}
-        shell: pwsh
         working-directory: spikes/spike3-node-lsp
         run: .\run.ps1
