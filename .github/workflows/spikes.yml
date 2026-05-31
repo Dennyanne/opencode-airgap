@@ -112,6 +112,9 @@ jobs:
 
       - name: Upload exe + versions.lock
         if: ${{ !cancelled() }}
+        # Non-fatal: artifact storage quota can be exhausted account-wide, which
+        # must not fail the build/update verification itself.
+        continue-on-error: true
         uses: actions/upload-artifact@v4
         with:
           name: opencode-airgap-exe

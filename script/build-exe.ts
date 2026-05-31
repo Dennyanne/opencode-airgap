@@ -265,6 +265,17 @@ export async function buildExe(
     );
   }
 
+  // For Windows targets, `bun build --compile` appends ".exe" when the outfile
+  // does not already end in it (e.g. an "*.exe.tmp" temp path used by update).
+  // Normalize back to exactly opts.outfile so callers (and the atomic rename in
+  // `airbuild update`) find the file where they expect it.
+  if (opts.target === "bun-windows-x64" && !opts.outfile.endsWith(".exe")) {
+    const produced = `${opts.outfile}.exe`;
+    if (fss.existsSync(produced)) {
+      await fs.rename(produced, opts.outfile);
+    }
+  }
+
   // Step 4: write manifest beside the exe.
   await writeManifestJson(manifest, opts.outfile);
 
