@@ -30,11 +30,11 @@ jobs:
           node-version: lts/*
 
       - name: Install dependencies
-        shell: pwsh
+        shell: powershell
         run: bun install --frozen-lockfile
 
       - name: Typecheck
-        shell: pwsh
+        shell: powershell
         run: bun run typecheck
 
       # --- Spikes -------------------------------------------------------
@@ -44,18 +44,18 @@ jobs:
 
       - name: Spike 1 — Bun embed/spawn
         if: ${{ !cancelled() }}
-        shell: pwsh
+        shell: powershell
         working-directory: spikes/spike1-bun-embed-spawn
         run: .\run.ps1
 
       - name: Spike 2 — JRE embed/extract
         if: ${{ !cancelled() }}
-        shell: pwsh
+        shell: powershell
         working-directory: spikes/spike2-jre-extract
         run: .\run.ps1
 
       - name: Spike 3 — Node-LSP runtime
         if: ${{ !cancelled() }}
-        shell: pwsh
+        shell: powershell
         working-directory: spikes/spike3-node-lsp
         run: .\run.ps1

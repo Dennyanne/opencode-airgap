@@ -31,8 +31,12 @@ if (-Not (Test-Path $TsServer)) {
     Write-Error "tsserver not found. Run: cd $RepoRoot; bun install"
 }
 
-$NodeBin = (Get-Command node -ErrorAction SilentlyContinue)?.Source
-$BunBin  = (Get-Command bun  -ErrorAction SilentlyContinue)?.Source
+# Note: avoid the `?.` null-conditional operator here — it is PowerShell 7.1+
+# only, and run scripts re-invoke through Windows PowerShell 5.1 (powershell.exe).
+$NodeCmd = Get-Command node -ErrorAction SilentlyContinue
+$BunCmd  = Get-Command bun  -ErrorAction SilentlyContinue
+$NodeBin = if ($NodeCmd) { $NodeCmd.Source } else { $null }
+$BunBin  = if ($BunCmd)  { $BunCmd.Source }  else { $null }
 
 if (-Not $NodeBin) { Write-Error "node not found in PATH" }
 if (-Not $BunBin)  { Write-Error "bun not found in PATH" }
