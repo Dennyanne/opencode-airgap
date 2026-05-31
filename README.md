@@ -25,12 +25,22 @@ opencode + oh-my-opencode + 모든 의존성(JRE, LSP 서버, MCP 서버, ast-gr
 | [Bun](https://bun.sh) | ≥ 1.1.0 | 빌드 런타임, 크로스 컴파일 |
 | Git | — | 저장소 클론 |
 
-```bash
-# Bun 설치
-curl -fsSL https://bun.sh/install | bash
+**Windows (권장 빌드 호스트)**
+```powershell
+# Bun 설치 (터미널 재시작 필요)
+winget install oven-sh.bun
+# 또는: powershell -c "irm bun.sh/install.ps1 | iex"
 
 # 저장소 세팅
-git clone <this-repo>
+git clone https://github.com/Dennyanne/opencode-airgap.git
+cd opencode-airgap
+bun install
+```
+
+**macOS / Linux (크로스 컴파일 가능, 단 exe 아이콘/메타데이터 삽입 불가)**
+```bash
+curl -fsSL https://bun.sh/install | bash
+git clone https://github.com/Dennyanne/opencode-airgap.git
 cd opencode-airgap
 bun install
 ```
@@ -64,12 +74,12 @@ cd ..\spike3-node-lsp
 
 ### 2. 빌드
 
-```bash
+```powershell
 # 기본: Windows x64 exe 생성 (현재 디렉토리에 opencode-airgap.exe)
 bun run src/cli/index.ts build
 
 # 출력 경로 지정
-bun run src/cli/index.ts build --out dist/opencode-airgap.exe
+bun run src/cli/index.ts build --out dist\opencode-airgap.exe
 
 # 이전 versions.lock으로 동일 버전 재현
 bun run src/cli/index.ts build --from-lock versions.lock
@@ -77,7 +87,7 @@ bun run src/cli/index.ts build --from-lock versions.lock
 
 ### 3. 업데이트 (항상 최신 버전)
 
-```bash
+```powershell
 bun run src/cli/index.ts update --out opencode-airgap.exe
 ```
 
@@ -306,7 +316,7 @@ oh-my-opencode 내장 MCP 중 외부 인터넷이 필요한 3종은 `enabled: fa
 
 ## 알려진 제약 및 주의사항
 
-- **크로스 컴파일 아이콘/메타데이터**: macOS/Linux에서 빌드 시 Windows exe에 아이콘 및 버전 정보(`VERSIONINFO`)를 삽입할 수 없습니다. 필요 시 Windows 호스트에서 빌드하거나 빌드 후 `rcedit`으로 별도 처리합니다.
+- **exe 아이콘/메타데이터**: **Windows 호스트에서 빌드하면 아이콘 및 버전 정보(`VERSIONINFO`) 삽입이 가능합니다.** macOS/Linux에서 크로스 컴파일 시에는 Bun이 이를 지원하지 않으므로, 필요한 경우 빌드 후 `rcedit`으로 별도 처리하거나 Windows 빌드 호스트를 사용하세요.
 - **AV/SmartScreen 차단 리스크**: 미서명 대용량 자기추출 exe는 기업 PC의 Windows Defender SmartScreen이나 엔드포인트 AV에 의해 차단될 수 있습니다. 코드 서명을 적용하거나 사내 AV 허용 목록에 등록하는 절차가 필요할 수 있습니다.
 - **Bun#10344**: Windows에서 컴파일된 exe가 임베드된 네이티브 바이너리를 스폰할 때 크래시가 보고된 이슈입니다. Spike 1이 이 리스크를 검증합니다. 재현될 경우 단일 exe 접근 자체를 재검토해야 합니다.
 
@@ -314,12 +324,15 @@ oh-my-opencode 내장 MCP 중 외부 인터넷이 필요한 3종은 `enabled: fa
 
 ## 개발 참고
 
-```bash
+```powershell
 # 타입 체크
 bunx tsc --noEmit
 
 # CLI help 확인
 bun run src/cli/index.ts --help
+
+# 검증 하니스 실행 (AC1/AC8/AC9/AC13 자동화)
+bun run script/verify/run-all.ts
 
 # JSON config 유효성 검사
 bun -e "JSON.parse(await Bun.file('templates/opencode.json').text()); console.log('ok')"
