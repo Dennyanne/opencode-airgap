@@ -72,23 +72,34 @@ async function main() {
   // ------------------------------------------------------------------
   // 1. Measure the embedded archive size.
   // ------------------------------------------------------------------
-  const archivePath: string = jreArchive;
-  const archiveStat = statSync(archivePath);
-  const archiveSizeBytes = archiveStat.size;
+  // The embedded asset resolves to a Bun virtual path (e.g.
+  // B:/~BUN/root/jre21-*.zip) that ONLY Bun's own APIs can read. External
+  // tools like Expand-Archive / unzip cannot open that path, so we must
+  // first materialize the embedded bytes to a real filesystem path before
+  // handing it to the extractor.
+  const embeddedPath: string = jreArchive;
+  const tmpDir = join(tmpdir(), `spike2-jre-${Date.now()}`);
+  mkdirSync(tmpDir, { recursive: true });
+
+  const archivePath = join(tmpDir, "jre-archive.zip");
+  await Bun.write(archivePath, Bun.file(embeddedPath));
+
+  const archiveSizeBytes = statSync(archivePath).size;
   const archiveSizeMB = (archiveSizeBytes / 1_048_576).toFixed(1);
-  console.log(`  archive  : ${archivePath}`);
+  console.log(`  embedded : ${embeddedPath}`);
+  console.log(`  archive  : ${archivePath} (materialized to real path)`);
   console.log(`  size     : ${archiveSizeMB} MB (${archiveSizeBytes} bytes)`);
 
   // ------------------------------------------------------------------
   // 2. Extract and time it.
   // ------------------------------------------------------------------
-  const tmpDir = join(tmpdir(), `spike2-jre-${Date.now()}`);
-  mkdirSync(tmpDir, { recursive: true });
-  console.log(`  dest     : ${tmpDir}`);
+  const destDir = join(tmpDir, "extracted");
+  mkdirSync(destDir, { recursive: true });
+  console.log(`  dest     : ${destDir}`);
   console.log("  extracting...");
 
   const t0 = performance.now();
-  await extractZip(archivePath, tmpDir);
+  await extractZip(archivePath, destDir);
   const extractMs = Math.round(performance.now() - t0);
 
   console.log(`  extraction time: ${extractMs} ms`);
@@ -96,7 +107,7 @@ async function main() {
   // ------------------------------------------------------------------
   // 3. Locate java binary.
   // ------------------------------------------------------------------
-  const javaPath = findJava(tmpDir);
+  const javaPath = findJava(destDir);
   if (!javaPath) {
     rmSync(tmpDir, { recursive: true, force: true });
     console.error("RESULT: FAIL — could not locate java binary in extracted JRE.");
