@@ -436,6 +436,14 @@ function buildEnv(
     OPENCODE_DISABLE_LSP_DOWNLOAD: "true",
     // Resolved cache root for {env:OPENCODE_AIRGAP_CACHE} placeholders in opencode.json.
     OPENCODE_AIRGAP_CACHE: cacheRoot,
+    // Disable the oh-my-opencode plugin's PostHog telemetry. On an air-gapped
+    // host the outbound call to us.i.posthog.com cannot complete, so leaving it
+    // on stalls startup on DNS/TCP timeouts every run. These are the plugin's
+    // own published opt-out switches, so this just exercises its supported API.
+    OMO_DISABLE_POSTHOG: "1",
+    OMO_SEND_ANONYMOUS_TELEMETRY: "0",
+    OMO_CODEX_DISABLE_POSTHOG: "1",
+    OMO_CODEX_SEND_ANONYMOUS_TELEMETRY: "0",
     // NOTE: we deliberately do NOT set OPENCODE_CONFIG here. Instead,
     // seedUserConfig() copies the bundled default config into the user's
     // ~/.config/opencode directory on first run (only when absent), so
@@ -536,8 +544,23 @@ async function copyMissing(srcDir: string, destDir: string): Promise<void> {
  * launching opencode.
  */
 async function seedUserConfig(cacheRoot: string): Promise<void> {
+  const dest = userConfigDir();
   try {
-    await copyMissing(path.join(cacheRoot, "config"), userConfigDir());
+    // 1. Bundled default opencode.json (and any other files under config/).
+    await copyMissing(path.join(cacheRoot, "config"), dest);
+    // 2. The oh-my-opencode plugin ships its own .opencode/command and
+    //    .opencode/skills; opencode auto-loads them from ~/.config/opencode.
+    //    copyMissing is a no-op if the plugin or these dirs are absent.
+    const pluginOpencodeDir = path.join(
+      cacheRoot,
+      "plugin",
+      "oh-my-opencode",
+      "node_modules",
+      "oh-my-opencode",
+      ".opencode",
+    );
+    await copyMissing(path.join(pluginOpencodeDir, "command"), path.join(dest, "command"));
+    await copyMissing(path.join(pluginOpencodeDir, "skills"), path.join(dest, "skills"));
   } catch (err: unknown) {
     process.stderr.write(
       `[bootstrap] warning: could not seed default config: ${

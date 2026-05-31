@@ -93,14 +93,18 @@ export async function stageAssets(opts: StageAssetsOptions): Promise<AssetManife
     fetchOpencodeCore(ctx).then(log("opencode-core")),
     fetchOpencodeTUI(ctx).then(log("tui")),
     fetchOhMyOpencode(ctx).then(log("oh-my-opencode")),
-    fetchJdtls(ctx).then(log("jdtls")),
+    // jdtls (Java LSP) is optional: eclipse.jdt.ls has no GitHub "latest"
+    // release, so this can 404. Skip rather than fail the whole build.
+    optional("jdtls", fetchJdtls(ctx).then(log("jdtls"))),
     fetchVolar(ctx).then(log("volar")),
     fetchTsserver(ctx).then(log("tsserver")),
     fetchFilesystemMcp(ctx).then(log("mcp-filesystem")),
     fetchAstGrep(ctx).then(log("ast-grep")),
     fetchJre21(ctx).then(log("jre21")),
     fetchPyright(ctx).then(log("pyright")),
-    fetchGopls(ctx).then(log("gopls")),
+    // gopls (Go LSP) is optional: built via `go install` only when a Go
+    // toolchain is present on the build machine; skip otherwise.
+    optional("gopls", fetchGopls(ctx).then(log("gopls"))),
     opts.skipNodeRuntime
       ? Promise.resolve([])
       : fetchNodeRuntime(ctx).then(log("node-lts")),
@@ -153,6 +157,20 @@ export async function stageAssets(opts: StageAssetsOptions): Promise<AssetManife
 // ---------------------------------------------------------------------------
 
 type FetchResult = Awaited<ReturnType<typeof fetchOpencodeCore>>;
+
+/**
+ * Wrap an optional (non-essential) fetcher so a failure logs a warning and
+ * yields no assets instead of aborting the whole build. Used for niche LSPs
+ * (jdtls, gopls) whose upstreams may be unavailable; core assets stay fatal.
+ */
+function optional(label: string, p: Promise<FetchResult>): Promise<FetchResult> {
+  return p.catch((err: unknown) => {
+    process.stderr.write(
+      `[stage] WARN: ${label} skipped — ${err instanceof Error ? err.message : String(err)}\n`,
+    );
+    return [] as FetchResult;
+  });
+}
 
 function log(label: string): (r: FetchResult) => FetchResult {
   return (r) => {

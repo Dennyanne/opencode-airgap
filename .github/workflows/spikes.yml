@@ -64,3 +64,55 @@ jobs:
         if: ${{ !cancelled() }}
         working-directory: spikes/spike3-node-lsp
         run: .\run.ps1
+
+  # End-to-end: fetch every asset, compile the single exe (build), and exercise
+  # the rollback-safe update flow (update). Runs on the same self-hosted Windows
+  # runner, which has network access. GITHUB_TOKEN lifts the api.github.com rate
+  # limit so the GitHub-sourced assets resolve without 403s.
+  windows-build:
+    runs-on: [self-hosted, windows, x64]
+    defaults:
+      run:
+        shell: pwsh -ExecutionPolicy Bypass -Command ". '{0}'"
+    env:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: airbuild build (fetch + compile single exe)
+        run: bun run src/cli/index.ts build --target bun-windows-x64 --out dist/opencode-airgap.exe
+
+      - name: Smoke-run built exe (bootstrap extract + seed config)
+        run: |
+          & .\dist\opencode-airgap.exe
+          if ($LASTEXITCODE -ne 0) { throw "built exe exited with code $LASTEXITCODE" }
+          Write-Host "bootstrap smoke OK"
+
+      - name: airbuild update (rebuild + write versions.lock + atomic replace)
+        run: bun run src/cli/index.ts update --target bun-windows-x64 --out dist/opencode-airgap.exe
+
+      - name: Upload exe + versions.lock
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: opencode-airgap-exe
+          path: |
+            dist/opencode-airgap.exe
+            dist/versions.lock
+          if-no-files-found: warn
+          retention-days: 14
