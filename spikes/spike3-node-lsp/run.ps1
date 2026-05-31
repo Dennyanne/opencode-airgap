@@ -58,14 +58,11 @@ function Try-LSP {
     Write-Host "--- Testing: $Label ---"
     Write-Host "  runtime: $Runtime"
 
-    $tmpDir = Join-Path $env:TEMP "spike3-$([System.Guid]::NewGuid().ToString('N').Substring(0,8))"
-    New-Item -ItemType Directory -Path $tmpDir | Out-Null
-    $outFile = Join-Path $tmpDir "response.txt"
+    $TsServerJs = Join-Path $RepoRoot "node_modules\typescript\bin\tsserver"
 
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = $Runtime
     # Pass tsserver path as argument (Bun runs JS files directly)
-    $TsServerJs = Join-Path $RepoRoot "node_modules\typescript\bin\tsserver"
     $psi.Arguments = "`"$TsServerJs`""
     $psi.UseShellExecute = $false
     $psi.RedirectStandardInput = $true
@@ -73,28 +70,46 @@ function Try-LSP {
     $psi.RedirectStandardError = $true
     $psi.CreateNoWindow = $true
 
-    $proc = [System.Diagnostics.Process]::Start($psi)
+    $proc = New-Object System.Diagnostics.Process
+    $proc.StartInfo = $psi
 
-    # Write the initialize payload
+    # tsserver is a long-running server — it never closes stdout, so a
+    # synchronous Peek()/ReadToEnd() blocks forever. Instead read output
+    # asynchronously into a StringBuilder via an event handler (never blocks)
+    # and also drain stderr so its pipe buffer cannot fill and deadlock the
+    # child. We then poll the buffer until a framed response appears or a hard
+    # 10s deadline elapses, and kill the process regardless.
+    $sb = New-Object System.Text.StringBuilder
+    $outEvent = Register-ObjectEvent -InputObject $proc -EventName OutputDataReceived -MessageData $sb -Action {
+        if ($null -ne $EventArgs.Data) { [void]$Event.MessageData.AppendLine($EventArgs.Data) }
+    }
+    $errEvent = Register-ObjectEvent -InputObject $proc -EventName ErrorDataReceived -Action {}
+
+    [void]$proc.Start()
+    $proc.BeginOutputReadLine()
+    $proc.BeginErrorReadLine()
+
+    # Send the initialize request.
     $proc.StandardInput.Write($Payload)
     $proc.StandardInput.Flush()
 
-    # Read with a 10s timeout
+    # Poll the async buffer (non-blocking) until framed response or timeout.
     $read = $false
     $response = ""
     $deadline = [DateTime]::UtcNow.AddSeconds(10)
     while ([DateTime]::UtcNow -lt $deadline) {
-        if ($proc.StandardOutput.Peek() -ne -1) {
-            $response = $proc.StandardOutput.ReadToEnd()
-            $read = $true
-            break
-        }
-        Start-Sleep -Milliseconds 300
+        try { $response = $sb.ToString() } catch { Start-Sleep -Milliseconds 50; continue }
+        if ($response -match "Content-Length") { $read = $true; break }
         if ($proc.HasExited) { break }
+        Start-Sleep -Milliseconds 200
     }
+    if (-not $read) { try { $response = $sb.ToString() } catch { $response = "" } }
 
-    $proc.Kill() 2>$null
-    Remove-Item -Recurse -Force $tmpDir 2>$null
+    # Tear down: stop the process and remove the event subscriptions.
+    try { if (-not $proc.HasExited) { $proc.Kill() } } catch { }
+    Unregister-Event -SourceIdentifier $outEvent.Name -ErrorAction SilentlyContinue
+    Unregister-Event -SourceIdentifier $errEvent.Name -ErrorAction SilentlyContinue
+    try { $proc.Dispose() } catch { }
 
     if ($read -and $response -match "Content-Length") {
         $previewLen = [Math]::Min($response.Length, 120)
