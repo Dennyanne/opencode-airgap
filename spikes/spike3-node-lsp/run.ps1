@@ -16,23 +16,28 @@ if ((Get-ExecutionPolicy -Scope Process) -notin @('Bypass', 'Unrestricted')) {
 $ErrorActionPreference = "Stop"
 
 $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
-$RepoRoot = (Resolve-Path (Join-Path $ScriptDir ".." "..")).Path
+# Note: nest two 2-argument Join-Path calls — passing 3+ positional args to
+# Join-Path is PowerShell 7+ only and fails under Windows PowerShell 5.1.
+$RepoRoot = (Resolve-Path (Join-Path (Join-Path $ScriptDir "..") "..")).Path
 
 Write-Host "==================================================="
 Write-Host " Spike 3 — Node-LSP runtime decision (Windows)"
 Write-Host "==================================================="
 
-# Locate tsserver
-$TsServer = Join-Path $RepoRoot "node_modules\.bin\tsserver.cmd"
+# Locate tsserver. Check the actual JS entry the LSP probe runs below
+# (node_modules\typescript\bin\tsserver), not a node_modules\.bin shim —
+# bun does not reliably create a .bin\tsserver(.cmd) shim on Windows.
+$TsServer = Join-Path $RepoRoot "node_modules\typescript\bin\tsserver"
 if (-Not (Test-Path $TsServer)) {
-    $TsServer = Join-Path $RepoRoot "node_modules\.bin\tsserver"
-}
-if (-Not (Test-Path $TsServer)) {
-    Write-Error "tsserver not found. Run: cd $RepoRoot; bun install"
+    Write-Error "tsserver not found at $TsServer. Run: cd $RepoRoot; bun install"
 }
 
-$NodeBin = (Get-Command node -ErrorAction SilentlyContinue)?.Source
-$BunBin  = (Get-Command bun  -ErrorAction SilentlyContinue)?.Source
+# Note: avoid the `?.` null-conditional operator here — it is PowerShell 7.1+
+# only, and run scripts re-invoke through Windows PowerShell 5.1 (powershell.exe).
+$NodeCmd = Get-Command node -ErrorAction SilentlyContinue
+$BunCmd  = Get-Command bun  -ErrorAction SilentlyContinue
+$NodeBin = if ($NodeCmd) { $NodeCmd.Source } else { $null }
+$BunBin  = if ($BunCmd)  { $BunCmd.Source }  else { $null }
 
 if (-Not $NodeBin) { Write-Error "node not found in PATH" }
 if (-Not $BunBin)  { Write-Error "bun not found in PATH" }
@@ -53,14 +58,11 @@ function Try-LSP {
     Write-Host "--- Testing: $Label ---"
     Write-Host "  runtime: $Runtime"
 
-    $tmpDir = Join-Path $env:TEMP "spike3-$([System.Guid]::NewGuid().ToString('N').Substring(0,8))"
-    New-Item -ItemType Directory -Path $tmpDir | Out-Null
-    $outFile = Join-Path $tmpDir "response.txt"
+    $TsServerJs = Join-Path $RepoRoot "node_modules\typescript\bin\tsserver"
 
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = $Runtime
     # Pass tsserver path as argument (Bun runs JS files directly)
-    $TsServerJs = Join-Path $RepoRoot "node_modules\typescript\bin\tsserver"
     $psi.Arguments = "`"$TsServerJs`""
     $psi.UseShellExecute = $false
     $psi.RedirectStandardInput = $true
@@ -68,28 +70,46 @@ function Try-LSP {
     $psi.RedirectStandardError = $true
     $psi.CreateNoWindow = $true
 
-    $proc = [System.Diagnostics.Process]::Start($psi)
+    $proc = New-Object System.Diagnostics.Process
+    $proc.StartInfo = $psi
 
-    # Write the initialize payload
+    # tsserver is a long-running server — it never closes stdout, so a
+    # synchronous Peek()/ReadToEnd() blocks forever. Instead read output
+    # asynchronously into a StringBuilder via an event handler (never blocks)
+    # and also drain stderr so its pipe buffer cannot fill and deadlock the
+    # child. We then poll the buffer until a framed response appears or a hard
+    # 10s deadline elapses, and kill the process regardless.
+    $sb = New-Object System.Text.StringBuilder
+    $outEvent = Register-ObjectEvent -InputObject $proc -EventName OutputDataReceived -MessageData $sb -Action {
+        if ($null -ne $EventArgs.Data) { [void]$Event.MessageData.AppendLine($EventArgs.Data) }
+    }
+    $errEvent = Register-ObjectEvent -InputObject $proc -EventName ErrorDataReceived -Action {}
+
+    [void]$proc.Start()
+    $proc.BeginOutputReadLine()
+    $proc.BeginErrorReadLine()
+
+    # Send the initialize request.
     $proc.StandardInput.Write($Payload)
     $proc.StandardInput.Flush()
 
-    # Read with a 10s timeout
+    # Poll the async buffer (non-blocking) until framed response or timeout.
     $read = $false
     $response = ""
     $deadline = [DateTime]::UtcNow.AddSeconds(10)
     while ([DateTime]::UtcNow -lt $deadline) {
-        if ($proc.StandardOutput.Peek() -ne -1) {
-            $response = $proc.StandardOutput.ReadToEnd()
-            $read = $true
-            break
-        }
-        Start-Sleep -Milliseconds 300
+        try { $response = $sb.ToString() } catch { Start-Sleep -Milliseconds 50; continue }
+        if ($response -match "Content-Length") { $read = $true; break }
         if ($proc.HasExited) { break }
+        Start-Sleep -Milliseconds 200
     }
+    if (-not $read) { try { $response = $sb.ToString() } catch { $response = "" } }
 
-    $proc.Kill() 2>$null
-    Remove-Item -Recurse -Force $tmpDir 2>$null
+    # Tear down: stop the process and remove the event subscriptions.
+    try { if (-not $proc.HasExited) { $proc.Kill() } } catch { }
+    Unregister-Event -SourceIdentifier $outEvent.Name -ErrorAction SilentlyContinue
+    Unregister-Event -SourceIdentifier $errEvent.Name -ErrorAction SilentlyContinue
+    try { $proc.Dispose() } catch { }
 
     if ($read -and $response -match "Content-Length") {
         $previewLen = [Math]::Min($response.Length, 120)

@@ -1,0 +1,66 @@
+name: Spikes (Windows)
+
+# Verifies the project typechecks and that each spike's Windows harness
+# (run.ps1) passes on a self-hosted Windows x64 runner. The spikes embed
+# native binaries / a JRE into a compiled Bun exe and extract+spawn them,
+# so they can only be validated on a real Windows host.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  windows-spikes:
+    runs-on: [self-hosted, windows, x64]
+
+    # Run every step under PowerShell 7 with an explicit Bypass execution
+    # policy. Bypass keeps GitHub's generated step scripts loadable on a
+    # runner whose machine policy is Restricted, and — because the spike
+    # run.ps1 scripts only re-invoke through Windows PowerShell 5.1 when the
+    # process-scope policy is NOT Bypass/Unrestricted — it makes them run
+    # directly under pwsh 7 instead of downgrading to 5.1.
+    defaults:
+      run:
+        shell: pwsh -ExecutionPolicy Bypass -Command ". '{0}'"
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Typecheck
+        run: bun run typecheck
+
+      # --- Spikes -------------------------------------------------------
+      # Each run.ps1 exits non-zero on FAIL, which fails the step. They run
+      # with `if: ${{ !cancelled() }}` so a failure in one spike still lets
+      # the others report, giving a full picture in a single CI run.
+
+      - name: Spike 1 — Bun embed/spawn
+        if: ${{ !cancelled() }}
+        working-directory: spikes/spike1-bun-embed-spawn
+        run: .\run.ps1
+
+      - name: Spike 2 — JRE embed/extract
+        if: ${{ !cancelled() }}
+        working-directory: spikes/spike2-jre-extract
+        run: .\run.ps1
+
+      - name: Spike 3 — Node-LSP runtime
+        if: ${{ !cancelled() }}
+        working-directory: spikes/spike3-node-lsp
+        run: .\run.ps1
