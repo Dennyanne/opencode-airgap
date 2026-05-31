@@ -113,51 +113,55 @@ export async function getReleaseAssetUrl(
 // ---------------------------------------------------------------------------
 
 /**
- * Fetch the opencode core binary from sst/opencode GitHub releases.
- * Windows x64 asset: opencode-x86_64-pc-windows-msvc.exe (or similar .exe).
+ * Fetch the opencode core CLI from sst/opencode GitHub releases.
+ *
+ * opencode ships the CLI as a per-platform ARCHIVE, not a bare binary:
+ *   windows x64  → opencode-windows-x64.zip
+ *   linux x64    → opencode-linux-x64.tar.gz
+ *   darwin arm64 → opencode-darwin-arm64.zip
+ * (The `*-desktop-*.exe` assets are the GUI app, and `*-baseline`/`*-musl`
+ * are CPU/libc variants — we want the standard CLI archive.)
  */
 export async function fetchOpencodeCore(ctx: FetchContext): Promise<FetchResult> {
-  const { os, exeSuffix } = platformFromTarget(ctx.target);
-  const isWin = os === "windows";
+  const { os } = platformFromTarget(ctx.target);
 
   const version = await resolveVersion(ctx, "opencode-core", () =>
     getLatestReleaseTag("sst", "opencode"),
   );
 
-  // Build an appropriate asset name pattern per platform.
   let assetPattern: RegExp;
-  if (isWin) {
-    // Matches: opencode-x86_64-pc-windows-msvc.exe, opencode_windows_x64.exe, etc.
-    assetPattern = /opencode.*(?:windows.*x(?:64|86_64)|x86_64.*windows).*\.exe$/i;
+  let archive: "zip" | "tar.gz";
+  if (os === "windows") {
+    assetPattern = /^opencode-windows-x64\.zip$/i;
+    archive = "zip";
   } else if (os === "linux") {
-    assetPattern = /opencode.*(?:linux.*x(?:64|86_64)|x86_64.*linux)/i;
+    assetPattern = /^opencode-linux-x64\.tar\.gz$/i;
+    archive = "tar.gz";
   } else {
-    // darwin
-    assetPattern = /opencode.*(?:darwin|macos|mac).*(?:arm64|aarch64)/i;
+    assetPattern = /^opencode-darwin-arm64\.zip$/i;
+    archive = "zip";
   }
 
   const assetUrl = await getReleaseAssetUrl("sst", "opencode", version, assetPattern);
 
   const stagingDir = path.join(ctx.stagingRoot, "opencode-core");
   await ensureDir(stagingDir);
-  const fileName = `opencode${exeSuffix}`;
-  const destPath = path.join(stagingDir, fileName);
+  const archiveFile = path.join(stagingDir, archive === "zip" ? "opencode.zip" : "opencode.tar.gz");
 
-  await retryFetch(() => downloadFile(assetUrl, destPath, `opencode-core ${version}`));
-  await verifyDigest(ctx, "opencode-core", destPath);
+  await retryFetch(() => downloadFile(assetUrl, archiveFile, `opencode-core ${version}`));
+  await verifyDigest(ctx, "opencode-core", archiveFile);
 
-  const digest = await computeDigest(destPath);
-  const bytes = await fileSize(destPath);
+  const digest = await computeDigest(archiveFile);
+  const bytes = await fileSize(archiveFile);
 
   const entry: AssetEntry = {
     id: "opencode-core",
     kind: "opencode-core",
     version,
     digest,
-    embedPath: destPath,
-    extractTo: isWin ? "opencode/opencode.exe" : "opencode/opencode",
-    archive: "none",
-    executable: true,
+    embedPath: archiveFile,
+    extractTo: "opencode",
+    archive,
     bytes,
   };
 
