@@ -24,6 +24,9 @@ opencode + oh-my-opencode + 모든 의존성(JRE, LSP 서버, MCP 서버, ast-gr
 |------|------|------|
 | [Bun](https://bun.sh) | ≥ 1.1.0 | 빌드 런타임, 크로스 컴파일 |
 | Git | — | 저장소 클론 |
+| [Go](https://go.dev) | (선택) | gopls(Go LSP)를 포함하려는 경우에만. 없으면 gopls는 자동 skip |
+
+> `tar`는 디렉토리 자산 패킹(빌드)·아카이브 추출(런타임)에 쓰이며, Windows 10+/Linux/macOS에 기본 포함되어 별도 설치가 필요 없습니다. 빌드 머신의 GitHub API 레이트리밋을 피하려면 `GITHUB_TOKEN`(또는 `GH_TOKEN`) 환경변수를 설정하세요.
 
 **Windows (권장 빌드 호스트)**
 ```powershell
@@ -49,9 +52,10 @@ bun install
 
 ## 빠른 시작
 
-### 1. Phase 0 스파이크 먼저 실행 (Windows 필수)
+### 1. (선택) Phase 0 스파이크 검증
 
-**풀 빌드(Phase 2+)는 아래 세 스파이크가 모두 통과한 뒤에만 진행합니다.**
+세 스파이크는 이미 모두 PASS했고 self-hosted Windows CI(`windows-spikes` 잡)에서 자동 검증됩니다.
+환경을 직접 확인하고 싶을 때만 아래를 실행하세요.
 
 ```powershell
 # Windows PowerShell — 세 스파이크를 순서대로 실행
@@ -165,18 +169,25 @@ exe 내부에는 모든 바이너리 자산이 임베드되어 있고, **첫 실
 ```
 opencode-airgap.exe  (단일 파일)
   └─ bun --compile 임베드
-       ├─ opencode 코어 (Bun 런타임)
-       ├─ opencode Go TUI 바이너리
-       ├─ oh-my-opencode 플러그인 페이로드
+       ├─ opencode 코어 (sst/opencode 릴리스 아카이브, 예: opencode-windows-x64.zip)
+       ├─ oh-my-opencode 플러그인 (npm 패키지 트리, 로컬 경로로 로드)
        ├─ JRE 21 (Temurin, jdtls용)
-       ├─ Node 런타임 (Volar/tsserver/MCP용, Spike3 결과에 따라 제거 가능)
-       ├─ jdtls (Eclipse JDT Language Server)
+       ├─ Node 런타임 (Volar/tsserver/MCP용, Spike3 결과상 제거 가능)
        ├─ Volar (@vue/language-server)
-       ├─ tsserver, pyright, gopls (best-effort)
+       ├─ tsserver (typescript-language-server + typescript)
+       ├─ Pyright (pyright)
        ├─ ast-grep (@ast-grep/cli)
        ├─ filesystem MCP (@modelcontextprotocol/server-filesystem)
        └─ asset-manifest.json (추출 경로 + sha256 다이제스트)
+
+  선택적(없으면 경고 후 skip — 빌드 비중단):
+       ├─ jdtls (Java LSP) — eclipse.jdt.ls는 GitHub 릴리스를 제공하지 않아 현재 자동 skip
+       └─ gopls (Go LSP) — 빌드 머신에 Go 툴체인이 있으면 `go install`로 빌드, 없으면 skip
 ```
+
+> 디렉토리 형태 자산(플러그인, npm LSP/MCP)은 단일 파일로만 임베드 가능한 Bun 제약 때문에
+> 빌드 시 `.tar.gz`로 묶여 임베드되고, 런타임에 `tar`로 풀립니다.
+> TUI는 최신 opencode가 본체에 번들하므로 별도 자산이 없습니다(자동 skip).
 
 ### 런타임 부트스트랩 흐름 (`src/embed/bootstrap.ts`)
 
@@ -190,11 +201,16 @@ exe 실행
   │
   ├─ 추출 필요 시:
   │     ├─ CREATE_NEW 락 파일 (동시 실행 직렬화 / 스테일 락 자동 회수)
-  │     ├─ 임시 디렉토리에 추출 → sha256 검증 → 원자적 rename → .complete 기록
+  │     ├─ 임시 디렉토리에 추출(아카이브는 tar로 unpack + 단일 최상위 폴더 평탄화)
+  │     ├─ sha256 검증 → 원자적 rename(EPERM 발생 시 백오프 재시도) → .complete 기록
   │     └─ 락 해제
   │
+  ├─ ~/.config/opencode 시딩 (없을 때만 복사 — 사용자 편집 보존)
+  │     기본 opencode.json + 플러그인의 .opencode/command·skills
+  │
   └─ 환경 변수 주입 후 opencode 위임
-       JAVA_HOME, OPENCODE_AIRGAP_CACHE, OPENCODE_DISABLE_LSP_DOWNLOAD=true, PATH
+       JAVA_HOME, OPENCODE_AIRGAP_CACHE, OPENCODE_DISABLE_LSP_DOWNLOAD=true, PATH,
+       OMO_DISABLE_POSTHOG=1 외 (oh-my-opencode 텔레메트리 차단 — 폐쇄망 행 방지)
 ```
 
 ### 재현 가능한 빌드 (`versions.lock`)
@@ -211,12 +227,13 @@ Phase 2 이후의 자산 수집/컴파일은 아래 세 스파이크가 모두 �
 
 | 스파이크 | 검증 내용 | 실행 환경 | 결과 |
 |----------|-----------|-----------|------|
-| **Spike 1** `spikes/spike1-bun-embed-spawn/` | Bun이 Windows exe에 네이티브 바이너리를 임베드하고 스폰할 수 있는가 (oven-sh/bun#10344) | **Windows 필수** | ⬜ 미확인 |
-| **Spike 2** `spikes/spike2-jre-extract/` | JRE 21 임베드/추출 동작 + 추출 시간 ≤ 60s budget | **Windows 필수** | ⬜ 미확인 |
-| **Spike 3** `spikes/spike3-node-lsp/` | Bun이 tsserver를 직접 호스팅 가능한가 (Node 임베드 제거 가능성) | macOS/Windows | ✅ macOS PASS (`bun-host`) |
+| **Spike 1** `spikes/spike1-bun-embed-spawn/` | Bun이 Windows exe에 네이티브 바이너리를 임베드하고 스폰할 수 있는가 (oven-sh/bun#10344) | **Windows 필수** | ✅ PASS — #10344 재현되지 않음 |
+| **Spike 2** `spikes/spike2-jre-extract/` | JRE 21 임베드/추출 동작 + 추출 시간 ≤ 60s budget | **Windows 필수** | ✅ PASS |
+| **Spike 3** `spikes/spike3-node-lsp/` | Bun이 tsserver를 직접 호스팅 가능한가 (Node 임베드 제거 가능성) | macOS/Windows | ✅ PASS (`bun-host`) |
 
-> **Spike 3 macOS 결과:** Bun 1.3.14에서 tsserver LSP initialize 핸드셰이크 성공 → `DECISION: bun-host`.
-> Node 임베드 제거로 ~50-80 MB 절감 가능. **Windows에서 최종 확인 필요.**
+> **Spike 3:** Bun 1.3.x에서 tsserver LSP initialize 핸드셰이크 성공 → `DECISION: bun-host`.
+> Node 임베드 제거로 ~50-80 MB 절감 가능(현재 기본 빌드에는 Node 런타임이 포함됨).
+> 세 스파이크 모두 self-hosted Windows CI(`windows-spikes` 잡)에서 자동 검증됩니다.
 
 ---
 
@@ -274,16 +291,26 @@ opencode-airgap/
 | `OPENCODE_DISABLE_LSP_DOWNLOAD` | `true` — LSP 네트워크 자동 다운로드 차단 |
 | `JAVA_HOME` | 추출된 JRE 21 경로 |
 | `PATH` | Node/java/gopls/pyright 디렉토리가 앞에 추가됨 |
+| `OMO_DISABLE_POSTHOG` 등 | oh-my-opencode의 PostHog 텔레메트리 opt-out — 폐쇄망에서 외부 전송 시도로 인한 기동 지연 방지 |
+
+> **설정 시딩 모델:** 부트스트랩은 `OPENCODE_CONFIG`를 강제하지 않습니다. 대신 첫 실행 시 기본
+> `opencode.json`(및 플러그인의 command/skills)을 `~/.config/opencode`에 **없을 때만** 복사하므로,
+> opencode가 표준 위치에서 설정을 읽고 사용자가 그 디렉토리에서 편집한 내용이 유지됩니다.
+> 사용자가 직접 `OPENCODE_CONFIG`를 지정하면 그 값이 우선합니다(아래 실행 "방법 B").
 
 ### LSP 지원 현황
 
-| LSP | 키 | 확장자 | 합격 게이트 |
-|-----|----|--------|------------|
-| jdtls (Eclipse JDT) | `lsp.java` | `.java` | ✅ 필수 (AC4) |
-| Volar (@vue/language-server) | `lsp.vue` | `.vue` | ✅ 필수 (AC5) |
-| typescript-language-server | `lsp.typescript` | `.ts .tsx .js .jsx` | best-effort |
-| Pyright | `lsp.python` | `.py` | best-effort |
-| gopls | `lsp.go` | `.go` | best-effort |
+| LSP | 키 | 확장자 | 수집 현황 |
+|-----|----|--------|-----------|
+| Volar (@vue/language-server) | `lsp.vue` | `.vue` | ✅ 포함 (npm) |
+| typescript-language-server (+typescript) | `lsp.typescript` | `.ts .tsx .js .jsx` | ✅ 포함 (npm) |
+| Pyright | `lsp.python` | `.py` | ✅ 포함 (npm) |
+| jdtls (Eclipse JDT) | `lsp.java` | `.java` | ⚠️ 선택적 — eclipse.jdt.ls가 GitHub 릴리스를 제공하지 않아 현재 자동 skip |
+| gopls | `lsp.go` | `.go` | ⚠️ 선택적 — 빌드 머신에 Go 툴체인이 있을 때만 `go install`로 포함 |
+
+> ⚠️ 선택적 LSP는 수집 실패 시 경고만 남기고 건너뛰며 빌드를 중단하지 않습니다.
+> 해당 언어 LSP가 빠진 채로도 나머지는 정상 동작합니다.
+> Java LSP가 필요하면 jdtls 자산 소스를 직접 스테이징하거나, Go LSP가 필요하면 빌드 머신에 Go를 설치하세요.
 
 ### MCP 비활성화 (폐쇄망 불가)
 
@@ -302,23 +329,30 @@ oh-my-opencode 내장 MCP 중 외부 인터넷이 필요한 3종은 `enabled: fa
 
 | Phase | 내용 | 상태 |
 |-------|------|------|
-| Phase 0 | 리스크 스파이크 하니스 | ✅ 스크립트 작성 완료 / ⬜ Windows 실행 대기 |
+| Phase 0 | 리스크 스파이크 하니스 | ✅ 완료 (세 스파이크 모두 Windows CI PASS) |
 | Phase 1 | 빌드 도구 스캐폴딩 (`airbuild` CLI, 타입 계약, 부트스트랩) | ✅ 완료 |
 | Phase 2 | 자산 수집 (opencode, oh-my-opencode, JRE, Node, LSP, MCP fetch) | ✅ 완료 (`src/fetcher/`) |
 | Phase 3 | Config 합성 (opencode.json 경로 주입) | ✅ 완료 (`src/fetcher/config.ts`) |
-| Phase 4 | 단일 exe 컴파일 (`bun build --compile`) | ✅ 구조 완료 / ⬜ 실자산 필요 |
+| Phase 4 | 단일 exe 컴파일 (`bun build --compile`) | ✅ 완료 — Windows CI에서 실자산 빌드 검증 |
 | Phase 5 | `airbuild update` + 롤백 | ✅ 완료 |
 | Phase 6 | 검증 하니스 (AC1~AC13) | ✅ 완료 (`script/verify/`) |
+| Phase 7 | 런타임 opencode 기동 (추출된 opencode 바이너리 spawn) | ⬜ 진행 예정 |
 
-**다음 단계:** Windows 머신에서 Spike 1·2 실행 → 통과 시 Phase 2 자산 수집 구현.
+**현재 동작:** 인터넷 머신에서 `airbuild build`/`update`가 모든 자산을 받아 단일 exe로 컴파일하고,
+폐쇄망에서 exe 실행 시 부트스트랩이 자산을 캐시로 추출·검증하고 환경을 구성합니다.
+
+**다음 단계 (Phase 7):** 부트스트랩이 추출된 opencode 바이너리를 실제로 spawn하도록 엔트리를 연결합니다.
+현재 exe는 부트스트랩 완료까지 수행하며, opencode 본체 기동은 아직 연결되지 않았습니다.
 
 ---
 
 ## 알려진 제약 및 주의사항
 
+- **opencode 본체 기동 미연결 (Phase 7)**: 현재 exe는 부트스트랩(자산 추출·검증·환경 구성·설정 시딩)까지 수행하고 종료합니다. 추출된 opencode 바이너리를 실제로 spawn하는 단계는 아직 연결되지 않았습니다.
+- **선택적 LSP 누락**: jdtls(Java)는 eclipse.jdt.ls가 GitHub 릴리스를 제공하지 않아 기본 빌드에서 빠집니다. gopls(Go)는 빌드 머신에 Go 툴체인이 있을 때만 포함됩니다. 둘 다 없어도 빌드는 성공하며 해당 언어 LSP만 비활성화됩니다.
 - **exe 아이콘/메타데이터**: **Windows 호스트에서 빌드하면 아이콘 및 버전 정보(`VERSIONINFO`) 삽입이 가능합니다.** macOS/Linux에서 크로스 컴파일 시에는 Bun이 이를 지원하지 않으므로, 필요한 경우 빌드 후 `rcedit`으로 별도 처리하거나 Windows 빌드 호스트를 사용하세요.
-- **AV/SmartScreen 차단 리스크**: 미서명 대용량 자기추출 exe는 기업 PC의 Windows Defender SmartScreen이나 엔드포인트 AV에 의해 차단될 수 있습니다. 코드 서명을 적용하거나 사내 AV 허용 목록에 등록하는 절차가 필요할 수 있습니다.
-- **Bun#10344**: Windows에서 컴파일된 exe가 임베드된 네이티브 바이너리를 스폰할 때 크래시가 보고된 이슈입니다. Spike 1이 이 리스크를 검증합니다. 재현될 경우 단일 exe 접근 자체를 재검토해야 합니다.
+- **AV/SmartScreen 차단 리스크**: 미서명 대용량 자기추출 exe는 기업 PC의 Windows Defender SmartScreen이나 엔드포인트 AV에 의해 차단될 수 있습니다. 코드 서명을 적용하거나 사내 AV 허용 목록에 등록하는 절차가 필요할 수 있습니다. (AV가 갓 추출된 바이너리를 잠그면 첫 실행 시 일시적 `EPERM`이 날 수 있어, 부트스트랩은 캐시 승격을 백오프 재시도합니다.)
+- **Bun#10344**: Windows 컴파일 exe가 임베드 네이티브 바이너리를 스폰할 때의 크래시 이슈 — **Spike 1에서 재현되지 않음을 확인**했습니다(Windows CI에서 자동 검증).
 
 ---
 
@@ -326,14 +360,24 @@ oh-my-opencode 내장 MCP 중 외부 인터넷이 필요한 3종은 `enabled: fa
 
 ```powershell
 # 타입 체크
-bunx tsc --noEmit
+bun run typecheck            # = tsc --noEmit
 
 # CLI help 확인
 bun run src/cli/index.ts --help
 
-# 검증 하니스 실행 (AC1/AC8/AC9/AC13 자동화)
-bun run script/verify/run-all.ts
+# 검증 하니스 (script/verify/ 의 개별 AC 스크립트)
+bun run script/verify/ac1-build.ts
+bun run script/verify/ac8-from-lock.ts
 
 # JSON config 유효성 검사
 bun -e "JSON.parse(await Bun.file('templates/opencode.json').text()); console.log('ok')"
 ```
+
+### CI
+
+`.github/workflows/spikes.yml`이 self-hosted Windows x64 러너에서 두 잡을 실행합니다.
+
+| 잡 | 검증 |
+|----|------|
+| `windows-spikes` | 타입체크 + spike1/2/3 (`run.ps1`) |
+| `windows-build` | `airbuild build` + `airbuild update` 엔드투엔드 (실자산 다운로드·컴파일·lock·교체) — `GITHUB_TOKEN`으로 레이트리밋 회피 |
