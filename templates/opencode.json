@@ -18,6 +18,9 @@
     "modelID": "{env:VLLM_MODEL}",
     "providerID": "vllm"
   },
+  "plugin": [
+    "{env:OPENCODE_AIRGAP_CACHE}/plugin/oh-my-opencode/node_modules/oh-my-opencode"
+  ],
   "lsp": {
     "java": {
       "command": [
