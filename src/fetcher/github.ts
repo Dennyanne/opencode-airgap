@@ -25,6 +25,22 @@ const GH_API = "https://api.github.com";
 const UA = "airbuild/1 (https://github.com/sst/opencode)";
 
 /**
+ * Build headers for api.github.com requests. A build-time GITHUB_TOKEN / GH_TOKEN
+ * (never embedded in the exe, never on the air-gapped target) lifts the
+ * unauthenticated 60 req/hr rate limit to 5000 req/hr, avoiding the HTTP 403
+ * that otherwise breaks the build on shared CI IPs.
+ */
+function githubHeaders(): Record<string, string> {
+  const headers: Record<string, string> = {
+    "User-Agent": UA,
+    Accept: "application/vnd.github+json",
+  };
+  const token = process.env["GITHUB_TOKEN"] ?? process.env["GH_TOKEN"];
+  if (token) headers["Authorization"] = `Bearer ${token}`;
+  return headers;
+}
+
+/**
  * Fetch the latest release tag_name for a GitHub repo.
  * Retried via retryFetch.
  */
@@ -35,7 +51,7 @@ export async function getLatestReleaseTag(
   return retryFetch(async () => {
     const url = `${GH_API}/repos/${owner}/${repo}/releases/latest`;
     process.stderr.write(`[github] GET ${url}\n`);
-    const res = await Bun.fetch(url, { headers: { "User-Agent": UA } });
+    const res = await Bun.fetch(url, { headers: githubHeaders() });
     if (!res.ok) {
       throw new Error(`[github] HTTP ${res.status} fetching latest release for ${owner}/${repo}`);
     }
@@ -62,7 +78,7 @@ export async function getReleaseAssetUrl(
   return retryFetch(async () => {
     const url = `${GH_API}/repos/${owner}/${repo}/releases/tags/${encodeURIComponent(tag)}`;
     process.stderr.write(`[github] GET ${url}\n`);
-    const res = await Bun.fetch(url, { headers: { "User-Agent": UA } });
+    const res = await Bun.fetch(url, { headers: githubHeaders() });
     if (!res.ok) {
       throw new Error(`[github] HTTP ${res.status} fetching release ${tag} for ${owner}/${repo}`);
     }
@@ -262,69 +278,98 @@ export async function fetchJdtls(ctx: FetchContext): Promise<FetchResult> {
 // ---------------------------------------------------------------------------
 
 /**
- * Fetch the gopls binary from golang/tools GitHub releases.
- * Release tags are of the form `gopls/v0.x.y`.
- * Binary assets are named `gopls_0.x.y_{os}_{arch}.zip`.
+ * Stage the gopls binary (Go LSP).
+ *
+ * gopls is NOT distributed as a GitHub release binary — golang/tools only
+ * publishes `gopls/vX.Y.Z` tags with no attached assets. Its only supported
+ * channel is `go install golang.org/x/tools/gopls@vX.Y.Z`, which downloads the
+ * module through the official, sum-verified Go module proxy (no third-party
+ * mirrors). We build it on the BUILD machine when a Go toolchain is present.
+ *
+ * Go LSP is optional: if Go is not on PATH, or the build fails, we log a clear
+ * warning and SKIP it (return []) rather than failing the whole build.
  */
 export async function fetchGopls(ctx: FetchContext): Promise<FetchResult> {
   const { os, arch } = platformFromTarget(ctx.target);
+  const goOs = os === "windows" ? "windows" : os === "linux" ? "linux" : "darwin";
+  const goArch = os === "darwin" && arch === "arm64" ? "arm64" : "amd64";
+  const exe = goOs === "windows" ? ".exe" : "";
 
-  // Determine platform suffix used in gopls asset names.
-  let goplsOs: string;
-  let goplsArch: string;
-  if (os === "windows") {
-    goplsOs = "windows";
-    goplsArch = "amd64";
-  } else if (os === "linux") {
-    goplsOs = "linux";
-    goplsArch = "amd64";
-  } else {
-    // darwin
-    goplsOs = "darwin";
-    goplsArch = arch === "arm64" ? "arm64" : "amd64";
+  try {
+    if (!Bun.which("go")) {
+      process.stderr.write(
+        "[gopls] Go toolchain not found on PATH — skipping Go LSP. gopls ships " +
+          "only via `go install`; install Go on the build machine to include it.\n",
+      );
+      return [];
+    }
+
+    const version = await resolveVersion(ctx, "gopls", () => fetchLatestGoplsVersion());
+    const bare = version.replace(/^v/, "");
+
+    const stagingDir = path.join(ctx.stagingRoot, "lsp", "gopls");
+    await ensureDir(stagingDir);
+
+    // Build from source via the official module proxy (Go verifies it against
+    // sum.golang.org). GOBIN captures the binary; GOOS/GOARCH cross-compile.
+    process.stderr.write(
+      `[gopls] go install golang.org/x/tools/gopls@v${bare} (GOOS=${goOs} GOARCH=${goArch})\n`,
+    );
+    const proc = Bun.spawn(["go", "install", `golang.org/x/tools/gopls@v${bare}`], {
+      env: { ...process.env, GOBIN: stagingDir, GOOS: goOs, GOARCH: goArch, CGO_ENABLED: "0" },
+      stdout: "pipe",
+      stderr: "pipe",
+    });
+    const code = await proc.exited;
+    if (code !== 0) {
+      const errText = await new Response(proc.stderr).text();
+      process.stderr.write(
+        `[gopls] go install failed (exit ${code}) — skipping Go LSP:\n${errText.slice(0, 500)}\n`,
+      );
+      return [];
+    }
+
+    // Native builds land in GOBIN; cross-compiles land in GOBIN/{GOOS}_{GOARCH}/.
+    const candidates = [
+      path.join(stagingDir, `gopls${exe}`),
+      path.join(stagingDir, `${goOs}_${goArch}`, `gopls${exe}`),
+    ];
+    let binPath = "";
+    for (const c of candidates) {
+      if (await Bun.file(c).exists()) {
+        binPath = c;
+        break;
+      }
+    }
+    if (!binPath) {
+      process.stderr.write(
+        `[gopls] go install reported success but no binary found under ${stagingDir} — skipping.\n`,
+      );
+      return [];
+    }
+
+    await verifyDigest(ctx, "gopls", binPath);
+    const digest = await computeDigest(binPath);
+    const bytes = await fileSize(binPath);
+
+    const entry: AssetEntry = {
+      id: "gopls",
+      kind: "lsp",
+      version: `v${bare}`,
+      digest,
+      embedPath: binPath,
+      extractTo: `lsp/gopls/gopls${exe}`,
+      archive: "none",
+      executable: true,
+      bytes,
+    };
+    return [entry];
+  } catch (err) {
+    process.stderr.write(
+      `[gopls] skipped — ${err instanceof Error ? err.message : String(err)}\n`,
+    );
+    return [];
   }
-
-  const version = await resolveVersion(ctx, "gopls", () =>
-    fetchLatestGoplsVersion(),
-  );
-
-  // Strip the leading "v" to get the bare version number used in asset names.
-  const bare = version.replace(/^v/, "");
-
-  // Asset name: gopls_0.x.y_windows_amd64.zip
-  const assetPattern = new RegExp(
-    `^gopls_${bare.replace(/\./g, "\\.")}_${goplsOs}_${goplsArch}\\.zip$`,
-    "i",
-  );
-
-  // The tag in the repo is `gopls/v0.x.y` — URL-encoded as `gopls%2Fv0.x.y`.
-  const fullTag = `gopls/v${bare}`;
-
-  const assetUrl = await getReleaseAssetUrl("golang", "tools", fullTag, assetPattern);
-
-  const stagingDir = path.join(ctx.stagingRoot, "lsp", "gopls");
-  await ensureDir(stagingDir);
-  const destPath = path.join(stagingDir, "gopls.zip");
-
-  await retryFetch(() => downloadFile(assetUrl, destPath, `gopls ${version}`));
-  await verifyDigest(ctx, "gopls", destPath);
-
-  const digest = await computeDigest(destPath);
-  const bytes = await fileSize(destPath);
-
-  const entry: AssetEntry = {
-    id: "gopls",
-    kind: "lsp",
-    version,
-    digest,
-    embedPath: destPath,
-    extractTo: "lsp/gopls",
-    archive: "zip",
-    executable: false,
-    bytes,
-  };
-
-  return [entry];
 }
 
 // ---------------------------------------------------------------------------
@@ -340,7 +385,7 @@ async function fetchLatestGoplsVersion(): Promise<string> {
   return retryFetch(async () => {
     const url = `${GH_API}/repos/golang/tools/releases?per_page=20`;
     process.stderr.write(`[github] GET ${url}\n`);
-    const res = await Bun.fetch(url, { headers: { "User-Agent": UA } });
+    const res = await Bun.fetch(url, { headers: githubHeaders() });
     if (!res.ok) {
       throw new Error(`[github] HTTP ${res.status} fetching golang/tools releases`);
     }

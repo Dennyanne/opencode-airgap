@@ -21,7 +21,6 @@ import {
   ensureDir,
   fileSize,
   computeDigest,
-  resolveVersion,
   verifyDigest,
   retryFetch,
 } from "./util.ts";
@@ -48,54 +47,54 @@ function adoptiumPlatform(target: FetchContext["target"]): {
   return { os: "linux", arch: "x64", archive: "tar.gz" };
 }
 
-/**
- * Parse the version string out of an Adoptium filename.
- * e.g. "OpenJDK21U-jre_x64_windows_hotspot_21.0.3_9.zip" → "21.0.3+9"
- * e.g. "OpenJDK21U-jre_aarch64_mac_hotspot_21.0.3_9.tar.gz" → "21.0.3+9"
- */
-function parseVersionFromFilename(filename: string): string | null {
-  // The tail after "hotspot_" is like "21.0.3_9.zip" — map _ back to + for semver.
-  const match = filename.match(/hotspot_(\d+\.\d+\.\d+)_(\d+)\./);
-  if (match) {
-    return `${match[1]}+${match[2]}`;
-  }
-  return null;
+const UA = "airbuild/1 (https://github.com/sst/opencode)";
+
+/** A JRE asset resolved from the Adoptium JSON API. */
+interface AdoptiumAsset {
+  /** Adoptium release name, e.g. "jdk-21.0.7+6" (usable with the version endpoint). */
+  version: string;
+  /** Direct download URL for the binary package. */
+  downloadUrl: string;
+  /** SHA-256 hex checksum published by Adoptium for the package. */
+  checksum: string;
 }
 
 /**
- * Issue a HEAD request to the latest-binary URL and follow redirects to
- * discover the resolved filename, which encodes the version.
+ * Resolve the latest Temurin JRE 21 asset via Adoptium's documented JSON API.
+ * This replaces the previous HEAD-redirect/Content-Disposition heuristic, which
+ * was brittle: the CDN does not reliably send Content-Disposition on HEAD.
+ * The JSON response gives us version, download link, and an authoritative
+ * SHA-256 checksum in a single typed call.
  */
-async function resolveLatestVersion(os: string, arch: string): Promise<string> {
-  const url = `${ADOPTIUM_BASE}/binary/latest/21/ga/${os}/${arch}/jre/hotspot/normal/eclipse`;
-
-  // Bun.fetch follows redirects by default; the final URL contains the filename.
-  const res = await retryFetch(() =>
-    Bun.fetch(url, {
-      method: "HEAD",
-      headers: { "User-Agent": "airbuild/1 (https://github.com/sst/opencode)" },
-      // Bun follows redirects automatically; we want the final URL.
-      redirect: "follow",
-    }),
-  );
-
-  // Try Content-Disposition first.
-  const cd = res.headers.get("content-disposition") ?? "";
-  const cdMatch = cd.match(/filename="?([^";]+)"?/i);
-  if (cdMatch) {
-    const ver = parseVersionFromFilename(cdMatch[1]);
-    if (ver) return ver;
+async function resolveLatestAsset(os: string, arch: string): Promise<AdoptiumAsset> {
+  const url =
+    `${ADOPTIUM_BASE}/assets/latest/21/hotspot` +
+    `?architecture=${arch}&image_type=jre&os=${os}&vendor=eclipse`;
+  const res = await retryFetch(() => Bun.fetch(url, { headers: { "User-Agent": UA } }));
+  if (!res.ok) {
+    throw new Error(`[adoptium] HTTP ${res.status} fetching ${url}`);
   }
-
-  // Fall back to parsing the final redirected URL.
-  const finalUrl = res.url;
-  const urlFilename = finalUrl.split("/").pop() ?? "";
-  const ver = parseVersionFromFilename(urlFilename);
-  if (ver) return ver;
-
-  throw new Error(
-    `[adoptium] Could not parse JRE 21 version from URL "${finalUrl}" or Content-Disposition "${cd}"`,
-  );
+  const arr = (await res.json()) as Array<Record<string, unknown>>;
+  if (!Array.isArray(arr) || arr.length === 0) {
+    throw new Error(`[adoptium] empty asset list from ${url}`);
+  }
+  const first = arr[0];
+  const binary = first["binary"] as Record<string, unknown> | undefined;
+  const pkg = binary?.["package"] as Record<string, unknown> | undefined;
+  const versionData = first["version"] as Record<string, unknown> | undefined;
+  const releaseName =
+    (typeof first["release_name"] === "string" && (first["release_name"] as string)) ||
+    (typeof versionData?.["openjdk_version"] === "string" &&
+      (versionData["openjdk_version"] as string)) ||
+    "";
+  const downloadUrl = typeof pkg?.["link"] === "string" ? (pkg["link"] as string) : "";
+  const checksum = typeof pkg?.["checksum"] === "string" ? (pkg["checksum"] as string) : "";
+  if (!releaseName || !downloadUrl) {
+    throw new Error(
+      `[adoptium] unexpected response shape from ${url}: ${JSON.stringify(first).slice(0, 200)}`,
+    );
+  }
+  return { version: releaseName, downloadUrl, checksum };
 }
 
 /**
@@ -111,22 +110,38 @@ export async function fetchJre21(ctx: FetchContext): Promise<FetchResult> {
 
   await ensureDir(stagingDir);
 
-  // Resolve version (pinned or latest).
-  const version = await resolveVersion(ctx, ASSET_ID, () =>
-    resolveLatestVersion(os, arch),
-  );
-
-  // Build download URL.
+  // Resolve version + download URL (and Adoptium's checksum for latest).
+  let version: string;
   let downloadUrl: string;
-  if (ctx.pinnedVersions?.[ASSET_ID]) {
-    // Adoptium version tags use "+" which must be URL-encoded as "%2B".
+  let upstreamChecksum = "";
+  const pinned = ctx.pinnedVersions?.[ASSET_ID];
+  if (pinned) {
+    version = pinned;
     const encodedVersion = encodeURIComponent(version);
     downloadUrl = `${ADOPTIUM_BASE}/binary/version/${encodedVersion}/${os}/${arch}/jre/hotspot/normal/eclipse`;
+    process.stderr.write(`[fetch] ${ASSET_ID}: using pinned version ${version}\n`);
   } else {
-    downloadUrl = `${ADOPTIUM_BASE}/binary/latest/21/ga/${os}/${arch}/jre/hotspot/normal/eclipse`;
+    const asset = await resolveLatestAsset(os, arch);
+    version = asset.version;
+    downloadUrl = asset.downloadUrl;
+    upstreamChecksum = asset.checksum;
+    process.stderr.write(`[fetch] ${ASSET_ID}: resolved latest version ${version}\n`);
   }
 
   await retryFetch(() => downloadFile(downloadUrl, destPath, `JRE 21 (${os}/${arch})`));
+
+  // Cross-verify against Adoptium's published SHA-256 when available.
+  if (upstreamChecksum) {
+    const actual = await computeDigest(destPath);
+    if (actual.toLowerCase() !== upstreamChecksum.toLowerCase()) {
+      throw new Error(
+        `[adoptium] checksum mismatch for JRE 21:\n` +
+          `  expected (Adoptium): ${upstreamChecksum}\n` +
+          `  actual:              ${actual}`,
+      );
+    }
+    process.stderr.write(`[adoptium] JRE 21: Adoptium checksum verified OK\n`);
+  }
 
   await verifyDigest(ctx, ASSET_ID, destPath);
 
