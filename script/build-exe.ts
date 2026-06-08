@@ -136,10 +136,6 @@ ${importLines.join("\n")}
 
 import { bootstrap } from "../src/embed/bootstrap.ts";
 
-// TODO(phase2): import the real opencode entry point once the opencode core
-// source is staged.  Replace the stub below with:
-//   import { main as opencodeMain } from "../staging/opencode/index.ts";
-
 const manifest = JSON.parse(${JSON.stringify(manifestJson)}) as import("../src/embed/manifest.ts").AssetManifest;
 
 const embeddedFiles = new Map<string, Blob>();
@@ -147,14 +143,26 @@ ${mapEntries.join("\n")}
 
 const result = await bootstrap(manifest, embeddedFiles);
 
-// Apply the env overlay returned by bootstrap before delegating to opencode.
+// Apply the env overlay returned by bootstrap before launching opencode.
 for (const [key, value] of Object.entries(result.env)) {
   process.env[key] = value;
 }
 
-// TODO(phase2): replace stub with the real opencode main invocation, e.g.:
-//   await opencodeMain();
-process.stderr.write("[airgap] bootstrap complete — opencode main not yet wired (phase2 TODO)\\n");
+if (!result.opencodeBinary) {
+  process.stderr.write("[airgap] FATAL: opencode binary not found in the extracted cache.\\n");
+  process.exit(1);
+}
+
+// Launch the extracted opencode binary, forwarding CLI args and inheriting the
+// terminal so the TUI works. In a Bun-compiled exe process.argv is
+// [bun, <embedded entry>, ...userArgs], so user args start at index 2.
+const child = Bun.spawnSync([result.opencodeBinary, ...process.argv.slice(2)], {
+  stdin: "inherit",
+  stdout: "inherit",
+  stderr: "inherit",
+  env: process.env,
+});
+process.exit(child.exitCode ?? 1);
 `;
 
   await fs.writeFile(GENERATED_ENTRY, source, "utf-8");
