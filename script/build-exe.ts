@@ -264,6 +264,7 @@ export async function buildExe(
     );
     // Write manifest for reference even in dry-run mode.
     await writeManifestJson(manifest, opts.outfile);
+    await copyNoticesBesideExe(opts.outfile);
     return { outfile: opts.outfile };
   }
 
@@ -293,6 +294,7 @@ export async function buildExe(
 
   // Step 4: write manifest beside the exe.
   await writeManifestJson(manifest, opts.outfile);
+  await copyNoticesBesideExe(opts.outfile);
 
   return { outfile: opts.outfile };
 }
@@ -304,6 +306,29 @@ export async function buildExe(
 async function writeManifestJson(manifest: AssetManifest, exePath: string): Promise<void> {
   const manifestPath = path.join(path.dirname(path.resolve(exePath)), MANIFEST_FILENAME);
   await fs.writeFile(manifestPath, JSON.stringify(manifest, null, 2) + "\n", "utf-8");
+}
+
+/** File name of the third-party license notices shipped beside the exe. */
+const NOTICES_FILENAME = "THIRD-PARTY-NOTICES.md";
+
+/**
+ * Copy THIRD-PARTY-NOTICES.md next to the exe so the bundle is always
+ * distributed with the third-party license notices required when
+ * redistributing the embedded software. Best-effort: a missing notices file
+ * warns but never fails the build.
+ */
+async function copyNoticesBesideExe(exePath: string): Promise<void> {
+  const src = path.resolve(import.meta.dir, "..", NOTICES_FILENAME);
+  const dest = path.join(path.dirname(path.resolve(exePath)), NOTICES_FILENAME);
+  try {
+    await fs.copyFile(src, dest);
+  } catch (err) {
+    process.stderr.write(
+      `[build-exe] warning: could not copy ${NOTICES_FILENAME} beside exe ` +
+        `(${err instanceof Error ? err.message : String(err)}). ` +
+        `Ship it manually — it is required to redistribute the bundled software.\n`,
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------
