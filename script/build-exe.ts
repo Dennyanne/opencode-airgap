@@ -156,13 +156,20 @@ if (!result.opencodeBinary) {
 // Launch the extracted opencode binary, forwarding CLI args and inheriting the
 // terminal so the TUI works. In a Bun-compiled exe process.argv is
 // [bun, <embedded entry>, ...userArgs], so user args start at index 2.
-const child = Bun.spawnSync([result.opencodeBinary, ...process.argv.slice(2)], {
+//
+// Use async Bun.spawn (not spawnSync): spawnSync does not hand the parent's
+// interactive console (TTY) to the child on Windows, so opencode's TUI reads an
+// immediate EOF on stdin and exits the moment it launches. Non-interactive
+// subcommands like \`--version\` survive because they never read stdin. Async
+// spawn with inherited stdio attaches the real terminal, keeping the TUI alive.
+const child = Bun.spawn([result.opencodeBinary, ...process.argv.slice(2)], {
   stdin: "inherit",
   stdout: "inherit",
   stderr: "inherit",
   env: process.env,
 });
-process.exit(child.exitCode ?? 1);
+const exitCode = await child.exited;
+process.exit(exitCode ?? 1);
 `;
 
   await fs.writeFile(GENERATED_ENTRY, source, "utf-8");
