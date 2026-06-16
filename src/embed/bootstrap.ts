@@ -913,8 +913,18 @@ export async function bootstrap(
   manifest: AssetManifest,
   embeddedFiles: Map<string, Blob>,
 ): Promise<BootstrapResult> {
-  const baseNamespace = `${CACHE_NAMESPACE_PREFIX}\\${manifest.cacheNamespace}`;
+  // Stamp the cache dir with a short hash of this exact build (opencode version
+  // + config + every asset digest). A new build therefore extracts to a NEW
+  // dir instead of replacing the old one — which sidesteps the Windows failure
+  // where the previous cache cannot be deleted because a still-running instance
+  // (or antivirus) holds its files open. Identical builds reuse the same dir,
+  // so the steady-state fast path is unchanged.
+  const buildId = computeBuildId(manifest);
+  const versionName = manifest.cacheNamespace.split("/").pop() ?? manifest.cacheNamespace;
+  const baseNamespace = `${CACHE_NAMESPACE_PREFIX}\\${manifest.cacheNamespace}-${buildId}`;
   const cacheRoot = await resolveCacheRoot(baseNamespace);
+  // Prior builds of the same opencode version (different hash) are now stale.
+  const versionPrefix = `${versionName}-`;
 
   // Fast path: check if the cache is already valid before taking the lock.
   // This is the common case on every run after the first.
@@ -955,9 +965,43 @@ export async function bootstrap(
     await extractAssets(cacheRoot, manifest.assets, embeddedFiles);
     process.stderr.write(`[bootstrap] Extraction complete.\n`);
 
+    // Reclaim disk from superseded builds of the same version (best-effort;
+    // a dir still in use by another running instance is locked and skipped).
+    await gcStaleBuilds(cacheRoot, versionPrefix);
+
     return await buildResult(cacheRoot, manifest.assets, true);
   } finally {
     await releaseLock(cacheRoot);
+  }
+}
+
+/** Short, stable id for this exact build: sha256 over each asset's id+digest. */
+function computeBuildId(manifest: AssetManifest): string {
+  const parts = manifest.assets.map((a) => `${a.id}:${a.digest}`).sort();
+  const hasher = new Bun.CryptoHasher("sha256");
+  hasher.update(parts.join("\n"));
+  return hasher.digest("hex").slice(0, 12);
+}
+
+/**
+ * Best-effort removal of superseded cache dirs for the same opencode version
+ * (i.e. siblings sharing `versionPrefix` but a different build hash, plus their
+ * leftover temp/stale scratch dirs), keeping only the current build. A dir held
+ * open by a still-running older instance fails the rm and is simply skipped.
+ * Never throws.
+ */
+async function gcStaleBuilds(cacheRoot: string, versionPrefix: string): Promise<void> {
+  const parent = path.dirname(cacheRoot);
+  const current = path.basename(cacheRoot);
+  let entries: string[];
+  try {
+    entries = await fs.readdir(parent);
+  } catch {
+    return;
+  }
+  for (const name of entries) {
+    if (name === current || !name.startsWith(versionPrefix)) continue;
+    await fs.rm(path.join(parent, name), { recursive: true, force: true }).catch(() => {});
   }
 }
 
