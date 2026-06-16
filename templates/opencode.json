@@ -14,10 +14,7 @@
       }
     }
   },
-  "model": {
-    "modelID": "{env:VLLM_MODEL}",
-    "providerID": "vllm"
-  },
+  "model": "vllm/{env:VLLM_MODEL}",
   "plugin": [
     "{env:OPENCODE_AIRGAP_CACHE}/plugin/oh-my-opencode/node_modules/oh-my-opencode"
   ],
