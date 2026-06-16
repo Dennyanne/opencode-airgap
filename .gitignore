@@ -17,3 +17,8 @@ spikes/*/dist/
 .omc/sessions/
 .omc/state/
 .omc/project-memory.json
+
+# Local runtime secrets — never commit. The .env.example template is tracked.
+.env
+.env.local
+!.env.example

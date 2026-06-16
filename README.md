@@ -285,6 +285,36 @@ opencode-airgap/
 | `VLLM_API_KEY` | API 키 (`not-used`도 대부분의 vLLM 배포에서 동작) |
 | `VLLM_MODEL` | 모델 ID (vLLM 서버가 보고하는 모델 이름과 일치해야 함) |
 
+> `VLLM_MODEL`에는 `vllm/` 접두사를 붙이지 마세요. 번들 설정이 이미 `"model": "vllm/{env:VLLM_MODEL}"`로 감쌉니다.
+
+#### `.env` 파일로 설정하기
+
+opencode는 Bun 위에서 동작하며, Bun은 **실행 작업 디렉터리(cwd)의 `.env`를 자동으로 로드**합니다.
+저장소 루트의 **`.env.example`** 을 복사해 값을 채우세요.
+
+```powershell
+# 실행할 작업 폴더(프로젝트 루트)에서
+Copy-Item .env.example .env
+# .env 를 편집해 VLLM_BASE_URL / VLLM_API_KEY / VLLM_MODEL 입력
+```
+
+```dotenv
+# .env 예시
+VLLM_BASE_URL=http://192.168.1.100:8000/v1
+VLLM_API_KEY=not-used
+VLLM_MODEL=meta-llama/Llama-3.1-70B-Instruct
+```
+
+- ⚠️ `.env`는 **exe 옆이 아니라 실행 시점의 cwd 기준**으로 로드됩니다. opencode를 실행하는 그 폴더에 두세요.
+  현재 opencode는 config 디렉터리/상위 폴더의 `.env`는 자동 로드하지 않습니다([opencode#10458](https://github.com/anomalyco/opencode/issues/10458)).
+- cwd와 무관하게 어디서든 적용하려면 **Windows 사용자 환경변수**가 가장 확실합니다(새 터미널부터 적용):
+  ```powershell
+  setx VLLM_BASE_URL "http://192.168.1.100:8000/v1"
+  setx VLLM_API_KEY  "not-used"
+  setx VLLM_MODEL    "meta-llama/Llama-3.1-70B-Instruct"
+  ```
+- `.env`에는 비밀값이 들어갈 수 있어 `.gitignore` 처리되어 있습니다. 추적되는 건 `.env.example` 템플릿뿐입니다.
+
 ### 부트스트랩이 자동으로 주입하는 변수 (수동 설정 불필요)
 
 | 변수 | 값 |
