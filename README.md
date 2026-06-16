@@ -10,7 +10,7 @@ opencode + oh-my-opencode + 모든 의존성(JRE, LSP 서버, MCP 서버, ast-gr
   airbuild build                        opencode-airgap.exe 실행
        │                                   │ (첫 실행 시 자산 추출)
        ▼                                   ▼
-  opencode-airgap.exe  ──복사──▶  %LOCALAPPDATA%\opencode-airgap\<ver>\
+  opencode-airgap.exe  ──복사──▶  %LOCALAPPDATA%\opencode-airgap\<ver>-<build>\
   versions.lock                      jre/, node/, lsp/, mcp/, ...
 ```
 
@@ -139,8 +139,11 @@ $env:OPENCODE_CONFIG = "C:\path\to\opencode-airgap.config.json"
 .\opencode-airgap.exe
 ```
 
-**첫 실행** 시 `%LOCALAPPDATA%\opencode-airgap\<ver>\`에 JRE, Node, LSP 서버 등을 추출합니다(약 60초 이내).
-두 번째 실행부터는 캐시가 유효하면 추출 없이 바로 시작합니다.
+**첫 실행** 시 `%LOCALAPPDATA%\opencode-airgap\<ver>-<build>\`에 JRE, Node, LSP 서버 등을 추출합니다(약 60초 이내).
+두 번째 실행부터는 캐시가 유효하면 추출 없이 바로 시작합니다. 캐시 폴더 이름에는 **빌드 해시**가
+붙어, 새 exe(설정/자산 변경)는 기존 캐시를 덮어쓰지 않고 새 폴더에 추출합니다. 이렇게 하면 이전
+캐시가 실행 중인 프로세스에 잠겨 있어도 충돌 없이 동작하며, 옛 빌드 폴더는 추출 성공 후 자동
+정리(GC)됩니다(잠겨 있으면 건너뜀).
 
 ---
 
@@ -195,6 +198,7 @@ opencode-airgap.exe  (단일 파일)
 exe 실행
   │
   ├─ 캐시 경로 결정: %LOCALAPPDATA% → %TEMP% → exe 옆 .cache (MAX_PATH 고려)
+  │     캐시 폴더명 = <opencode 버전>-<빌드 해시>  (빌드별 격리 → 잠긴 옛 캐시 덮어쓰기 회피)
   │
   ├─ .complete 센티넬 + sha256 체크섬으로 유효 캐시 확인
   │     └─ 유효 → 추출 스킵, 즉시 시작
@@ -202,7 +206,8 @@ exe 실행
   ├─ 추출 필요 시:
   │     ├─ CREATE_NEW 락 파일 (동시 실행 직렬화 / 스테일 락 자동 회수)
   │     ├─ 임시 디렉토리에 추출(아카이브는 tar로 unpack + 단일 최상위 폴더 평탄화)
-  │     ├─ sha256 검증 → 원자적 rename(EPERM 발생 시 백오프 재시도) → .complete 기록
+  │     ├─ sha256 검증 → 기존 캐시는 옆으로 move-aside 후 원자적 rename(EPERM/EACCES 백오프 재시도) → .complete 기록
+  │     ├─ 옛 빌드 캐시 GC (best-effort, 잠긴 폴더는 건너뜀)
   │     └─ 락 해제
   │
   ├─ ~/.config/opencode 시딩 (없을 때만 복사 — 사용자 편집 보존)
