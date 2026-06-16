@@ -497,7 +497,11 @@ function buildEnv(
   const env: Record<string, string> = {
     OPENCODE_DISABLE_LSP_DOWNLOAD: "true",
     // Resolved cache root for {env:OPENCODE_AIRGAP_CACHE} placeholders in opencode.json.
-    OPENCODE_AIRGAP_CACHE: cacheRoot,
+    // opencode expands {env:VAR} textually into the raw config text BEFORE parsing it
+    // as JSON(C). On Windows cacheRoot contains backslashes (C:\Users\...), which the
+    // JSON parser then rejects as invalid escape sequences (\U, \A, ...). Forward
+    // slashes parse cleanly and are accepted by node/java/etc. on Windows all the same.
+    OPENCODE_AIRGAP_CACHE: cacheRoot.replace(/\\/g, "/"),
     // Disable the oh-my-opencode plugin's PostHog telemetry. On an air-gapped
     // host the outbound call to us.i.posthog.com cannot complete, so leaving it
     // on stalls startup on DNS/TCP timeouts every run. These are the plugin's
@@ -600,6 +604,128 @@ async function copyMissing(srcDir: string, destDir: string): Promise<void> {
 }
 
 /**
+ * Strip `//` line and slash-star block comments from JSONC text, scanning
+ * string literals so delimiters inside strings (e.g. the `//` in a URL) are
+ * left untouched. Used only to validate a config, never to rewrite it.
+ */
+function stripJsoncComments(text: string): string {
+  let out = "";
+  let inString = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (inString) {
+      out += c;
+      if (c === "\\") {
+        out += text[i + 1] ?? "";
+        i++;
+      } else if (c === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (c === '"') {
+      inString = true;
+      out += c;
+      continue;
+    }
+    if (c === "/" && text[i + 1] === "/") {
+      while (i < text.length && text[i] !== "\n") i++;
+      continue;
+    }
+    if (c === "/" && text[i + 1] === "*") {
+      i += 2;
+      while (i < text.length && !(text[i] === "*" && text[i + 1] === "/")) i++;
+      i++; // land on the '/'; loop's i++ steps past it
+      continue;
+    }
+    out += c;
+  }
+  return out;
+}
+
+/** Drop trailing commas before `}`/`]`, scanning strings so commas inside them survive. */
+function dropTrailingCommas(text: string): string {
+  let out = "";
+  let inString = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (inString) {
+      out += c;
+      if (c === "\\") {
+        out += text[i + 1] ?? "";
+        i++;
+      } else if (c === '"') {
+        inString = false;
+      }
+      continue;
+    }
+    if (c === '"') {
+      inString = true;
+      out += c;
+      continue;
+    }
+    if (c === ",") {
+      let j = i + 1;
+      while (j < text.length && /\s/.test(text[j]!)) j++;
+      if (text[j] === "}" || text[j] === "]") continue; // skip trailing comma
+    }
+    out += c;
+  }
+  return out;
+}
+
+/**
+ * Best-effort check that `text` is acceptable to opencode's tolerant config
+ * parser (JSON plus comments and trailing commas). Conservative by design: any
+ * file we cannot prove broken is treated as valid so a user's config is never
+ * clobbered on a false positive.
+ */
+function isParseableJsonc(text: string): boolean {
+  try {
+    JSON.parse(text);
+    return true;
+  } catch {
+    // not plain JSON — retry with JSONC tolerances below
+  }
+  try {
+    JSON.parse(dropTrailingCommas(stripJsoncComments(text)));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * If the user's seeded opencode.json exists but no longer parses (corrupted or
+ * partially-written), move it aside to a timestamped backup and restore the
+ * bundled default. Valid user configs — including JSONC with comments or
+ * trailing commas — are left untouched. No-op when either file is absent.
+ */
+async function reseedConfigIfBroken(
+  bundledConfig: string,
+  destConfig: string,
+): Promise<void> {
+  if (!(await pathExists(destConfig))) return; // copyMissing seeds a fresh one
+  if (!(await pathExists(bundledConfig))) return; // nothing to restore from
+  let raw: string;
+  try {
+    raw = await fs.readFile(destConfig, "utf8");
+  } catch {
+    return; // unreadable — leave it for opencode to report
+  }
+  if (isParseableJsonc(raw)) return; // valid — never overwrite user edits
+
+  const stamp = new Date().toISOString().replace(/[:.]/g, "-");
+  const backup = `${destConfig}.broken-${stamp}`;
+  await fs.rename(destConfig, backup);
+  await fs.copyFile(bundledConfig, destConfig);
+  process.stderr.write(
+    `[bootstrap] opencode.json was not valid JSON; restored bundled default ` +
+      `(previous file backed up to ${backup})\n`,
+  );
+}
+
+/**
  * On every run, ensure the user's ~/.config/opencode directory is seeded with
  * the bundled default config. Files are copied only when absent, so user edits
  * persist across runs and updates. Best-effort: a failure here must not block
@@ -610,6 +736,13 @@ async function seedUserConfig(cacheRoot: string): Promise<void> {
   try {
     // 1. Bundled default opencode.json (and any other files under config/).
     await copyMissing(path.join(cacheRoot, "config"), dest);
+    // 1b. Repair a corrupted/partially-written opencode.json from the bundled
+    //     default. Only triggers when the existing file fails to parse, so
+    //     valid user configs are never overwritten.
+    await reseedConfigIfBroken(
+      path.join(cacheRoot, "config", "opencode.json"),
+      path.join(dest, "opencode.json"),
+    );
     // 2. The oh-my-opencode plugin ships its own .opencode/command and
     //    .opencode/skills; opencode auto-loads them from ~/.config/opencode.
     //    copyMissing is a no-op if the plugin or these dirs are absent.
