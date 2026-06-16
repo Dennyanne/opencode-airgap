@@ -500,7 +500,7 @@ bun -e "JSON.parse(await Bun.file('templates/opencode.json').text()); console.lo
 
 ### CI
 
-`.github/workflows/spikes.yml`이 self-hosted Windows x64 러너에서 두 잡을 실행합니다.
+`.github/workflows/spikes.yml`이 GitHub-hosted `windows-latest` 러너에서 두 잡을 실행합니다.
 
 | 잡 | 검증 |
 |----|------|

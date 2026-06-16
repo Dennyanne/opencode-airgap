@@ -1,7 +1,7 @@
 name: Spikes (Windows)
 
 # Verifies the project typechecks and that each spike's Windows harness
-# (run.ps1) passes on a self-hosted Windows x64 runner. The spikes embed
+# (run.ps1) passes on a GitHub-hosted Windows runner. The spikes embed
 # native binaries / a JRE into a compiled Bun exe and extract+spawn them,
 # so they can only be validated on a real Windows host.
 
@@ -13,14 +13,13 @@ on:
 
 jobs:
   windows-spikes:
-    runs-on: [self-hosted, windows, x64]
+    runs-on: windows-latest
 
     # Run every step under PowerShell 7 with an explicit Bypass execution
-    # policy. Bypass keeps GitHub's generated step scripts loadable on a
-    # runner whose machine policy is Restricted, and — because the spike
-    # run.ps1 scripts only re-invoke through Windows PowerShell 5.1 when the
-    # process-scope policy is NOT Bypass/Unrestricted — it makes them run
-    # directly under pwsh 7 instead of downgrading to 5.1.
+    # policy. Bypass keeps GitHub's generated step scripts loadable, and —
+    # because the spike run.ps1 scripts only re-invoke through Windows
+    # PowerShell 5.1 when the process-scope policy is NOT Bypass/Unrestricted —
+    # it makes them run directly under pwsh 7 instead of downgrading to 5.1.
     defaults:
       run:
         shell: pwsh -ExecutionPolicy Bypass -Command ". '{0}'"
@@ -28,15 +27,6 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Free disk on the self-hosted runner
-        # The heavy windows-build job extracts assets to %LOCALAPPDATA% which
-        # persists across runs on this single self-hosted box. Reclaim it before
-        # `bun install` so a full disk can't truncate the typescript install
-        # (which made spike3 report "tsserver not found").
-        run: |
-          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue "$env:LOCALAPPDATA\opencode-airgap"
-          Write-Host "pre-run cleanup done"
 
       - name: Setup Bun
         uses: oven-sh/setup-bun@v2
@@ -75,11 +65,11 @@ jobs:
         run: .\run.ps1
 
   # End-to-end: fetch every asset, compile the single exe (build), and exercise
-  # the rollback-safe update flow (update). Runs on the same self-hosted Windows
-  # runner, which has network access. GITHUB_TOKEN lifts the api.github.com rate
-  # limit so the GitHub-sourced assets resolve without 403s.
+  # the rollback-safe update flow (update). GitHub-hosted runners have network
+  # access; GITHUB_TOKEN lifts the api.github.com rate limit so the
+  # GitHub-sourced assets resolve without 403s.
   windows-build:
-    runs-on: [self-hosted, windows, x64]
+    runs-on: windows-latest
     defaults:
       run:
         shell: pwsh -ExecutionPolicy Bypass -Command ". '{0}'"
@@ -132,21 +122,3 @@ jobs:
             dist/versions.lock
           if-no-files-found: warn
           retention-days: 14
-
-      - name: Free disk on the self-hosted runner
-        # The build downloads ~150 MB of assets twice and the smoke-run extracts
-        # them to %LOCALAPPDATA%, which persists across jobs/runs and would
-        # otherwise accumulate and starve later jobs (e.g. windows-spikes failing
-        # its `bun install`). Reclaim it so the runner stays healthy.
-        if: ${{ always() }}
-        run: |
-          foreach ($p in @(
-            "$env:LOCALAPPDATA\opencode-airgap",
-            "$env:USERPROFILE\.config\opencode",
-            "dist",
-            "staging\runtime", "staging\opencode-core", "staging\lsp",
-            "staging\mcp", "staging\plugin", "staging\tui", "staging\.embed"
-          )) {
-            Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $p
-          }
-          Write-Host "runner cleanup done"
