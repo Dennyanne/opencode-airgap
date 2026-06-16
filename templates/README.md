@@ -80,6 +80,24 @@ $env:VLLM_MODEL     = "meta-llama/Llama-3.1-70B-Instruct"
 .\opencode-airgap.exe
 ```
 
+Alternatively, use a `.env` file. opencode runs on Bun, which auto-loads `.env`
+from the **current working directory** into the environment, so the `{env:VAR}`
+placeholders in the embedded config resolve from it. Copy the repo-root
+`.env.example` to `.env` in the folder you launch opencode from:
+
+```dotenv
+VLLM_BASE_URL=http://192.168.1.100:8000/v1
+VLLM_API_KEY=not-used
+VLLM_MODEL=meta-llama/Llama-3.1-70B-Instruct
+```
+
+- Do **not** prefix `VLLM_MODEL` with `vllm/` — the bundled config already wraps
+  it as `"model": "vllm/{env:VLLM_MODEL}"`.
+- `.env` is loaded relative to the working directory, not the `.exe`. It is not
+  auto-loaded from the config dir or parent folders ([opencode#10458](https://github.com/anomalyco/opencode/issues/10458)).
+  To apply regardless of CWD, set the vars as persistent Windows user env vars
+  with `setx`.
+
 ### Set automatically by the bootstrap (do not set manually unless testing)
 
 | Variable | Set to | Purpose |
