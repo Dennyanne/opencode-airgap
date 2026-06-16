@@ -14,7 +14,7 @@ written as `{env:OPENCODE_AIRGAP_CACHE}/<relative-path>`.
 Before launching opencode, `buildEnv()` must include:
 
 ```
-OPENCODE_AIRGAP_CACHE = <absolute path of the resolved per-version cache root>
+OPENCODE_AIRGAP_CACHE = <absolute path of the resolved per-build cache root>
 ```
 
 The bootstrap already resolves the cache root (the `cacheRoot` variable returned
@@ -102,7 +102,7 @@ VLLM_MODEL=meta-llama/Llama-3.1-70B-Instruct
 
 | Variable | Set to | Purpose |
 |---|---|---|
-| `OPENCODE_AIRGAP_CACHE` | Resolved per-version cache root (e.g. `%LOCALAPPDATA%\opencode-airgap\0.1.0`) | Expands `{env:OPENCODE_AIRGAP_CACHE}` in opencode.json LSP/MCP paths |
+| `OPENCODE_AIRGAP_CACHE` | Resolved per-build cache root (e.g. `%LOCALAPPDATA%\opencode-airgap\opencode-airgap\v1.17.7-ab12cd34ef56`) — the trailing hash stamps the exact build so a new exe extracts to a new dir instead of overwriting a locked one | Expands `{env:OPENCODE_AIRGAP_CACHE}` in opencode.json LSP/MCP paths |
 | `OPENCODE_DISABLE_LSP_DOWNLOAD` | `"true"` | Prevents opencode from attempting network downloads of LSP servers |
 | `JAVA_HOME` | `<cache>/runtime/jre` | Used by jdtls and any Java tooling |
 | `PATH` | Prepended with extracted runtime and tool bin dirs | Makes node, java, gopls, pyright available without absolute paths |
@@ -278,5 +278,5 @@ at the extracted server under `{env:OPENCODE_AIRGAP_CACHE}/mcp/<name>/...`.
 4. Set `OPENCODE_CONFIG` to the absolute path of the edited config file (or set the
    three `VLLM_*` env vars instead).
 5. Run `opencode-airgap.exe`. On first run it extracts ~N GB of assets to
-   `%LOCALAPPDATA%\opencode-airgap\<version>\` — this takes up to 60 seconds.
+   `%LOCALAPPDATA%\opencode-airgap\<version>-<build>\` — this takes up to 60 seconds.
 6. Subsequent runs skip extraction and start immediately.

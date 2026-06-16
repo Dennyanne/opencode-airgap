@@ -413,19 +413,33 @@ async function flattenLoneTopDir(dir: string): Promise<void> {
 /**
  * Promote the verified temp extraction to the final cache root.
  *
- * On Windows, files just written by the extraction (e.g. the JRE's java.exe,
- * Node's node.exe) are frequently held by antivirus real-time scanning or the
- * search indexer for a short window, so removing the previous cache and
- * renaming the temp dir can fail transiently with EPERM/EACCES/EBUSY. Retry
- * with exponential backoff to ride those out; surface any non-transient error.
+ * Rather than deleting the previous cache in place, move it aside in a single
+ * rename and then move the temp dir into place. On Windows an in-place
+ * recursive rm of a just-written tree frequently fails with EPERM/EACCES/EBUSY
+ * — antivirus real-time scanning or the search indexer hold transient handles,
+ * and extracted files can carry a read-only attribute that blocks deletion —
+ * whereas renaming the whole directory in one shot usually still succeeds. The
+ * moved-aside copy is then removed best-effort (and any leftover is swept on the
+ * next run). Retry with exponential backoff to ride out transient locks.
+ *
+ * If the previous cache cannot even be moved, a process is almost certainly
+ * holding a file inside it open (Windows refuses to rename a directory tree
+ * with an open handle) — surface an actionable error rather than a raw EACCES.
  */
 async function promoteCache(tmpRoot: string, cacheRoot: string): Promise<void> {
   let lastErr: unknown;
   for (let attempt = 0; attempt < 6; attempt++) {
     try {
-      // Remove any previously failed/partial cache, then move temp into place.
-      await fs.rm(cacheRoot, { recursive: true, force: true });
+      // Move any existing cache aside (single rename), then move temp into place.
+      let stale: string | null = null;
+      if (await pathExists(cacheRoot)) {
+        stale = `${cacheRoot}.stale-${process.pid}-${attempt}`;
+        await fs.rename(cacheRoot, stale);
+      }
       await fs.rename(tmpRoot, cacheRoot);
+      // Old cache is out of the way; deleting it is no longer on the critical
+      // path, so a lingering lock here cannot fail the promotion.
+      if (stale) await fs.rm(stale, { recursive: true, force: true }).catch(() => {});
       return;
     } catch (err: unknown) {
       lastErr = err;
@@ -434,7 +448,34 @@ async function promoteCache(tmpRoot: string, cacheRoot: string): Promise<void> {
       await sleep(250 * Math.pow(2, attempt)); // 0.25s, 0.5s … ~8s
     }
   }
-  throw lastErr;
+  throw new Error(
+    `[bootstrap] Could not replace the existing cache at ${cacheRoot} ` +
+      `(${errnoCode(lastErr) ?? "unknown error"}). A running process is likely ` +
+      `using it — close any opencode / node / java processes started from that ` +
+      `folder (or reboot), then run again. As a last resort delete the folder ` +
+      `manually while nothing is running.`,
+    { cause: lastErr },
+  );
+}
+
+/**
+ * Best-effort removal of leftover `.tmp-*` / `.stale-*` sibling dirs from prior
+ * crashed or partially-promoted runs, so they do not accumulate. Never throws.
+ */
+async function sweepLeftovers(cacheRoot: string): Promise<void> {
+  const parent = path.dirname(cacheRoot);
+  const base = path.basename(cacheRoot);
+  let entries: string[];
+  try {
+    entries = await fs.readdir(parent);
+  } catch {
+    return; // parent missing — nothing to sweep
+  }
+  for (const name of entries) {
+    if (name.startsWith(`${base}.tmp-`) || name.startsWith(`${base}.stale-`)) {
+      await fs.rm(path.join(parent, name), { recursive: true, force: true }).catch(() => {});
+    }
+  }
 }
 
 /**
@@ -450,8 +491,11 @@ async function extractAssets(
 ): Promise<void> {
   const tmpRoot = `${cacheRoot}.tmp-${process.pid}`;
 
-  // Clean up any leftover temp dir from a prior crashed run.
+  // Clean up our own temp dir plus any leftover temp/stale dirs from prior
+  // crashed or partially-promoted runs (the lock guarantees we are the only
+  // extractor, so sweeping siblings is safe).
   await fs.rm(tmpRoot, { recursive: true, force: true });
+  await sweepLeftovers(cacheRoot);
 
   try {
     await fs.mkdir(tmpRoot, { recursive: true });
@@ -869,8 +913,18 @@ export async function bootstrap(
   manifest: AssetManifest,
   embeddedFiles: Map<string, Blob>,
 ): Promise<BootstrapResult> {
-  const baseNamespace = `${CACHE_NAMESPACE_PREFIX}\\${manifest.cacheNamespace}`;
+  // Stamp the cache dir with a short hash of this exact build (opencode version
+  // + config + every asset digest). A new build therefore extracts to a NEW
+  // dir instead of replacing the old one — which sidesteps the Windows failure
+  // where the previous cache cannot be deleted because a still-running instance
+  // (or antivirus) holds its files open. Identical builds reuse the same dir,
+  // so the steady-state fast path is unchanged.
+  const buildId = computeBuildId(manifest);
+  const versionName = manifest.cacheNamespace.split("/").pop() ?? manifest.cacheNamespace;
+  const baseNamespace = `${CACHE_NAMESPACE_PREFIX}\\${manifest.cacheNamespace}-${buildId}`;
   const cacheRoot = await resolveCacheRoot(baseNamespace);
+  // Prior builds of the same opencode version (different hash) are now stale.
+  const versionPrefix = `${versionName}-`;
 
   // Fast path: check if the cache is already valid before taking the lock.
   // This is the common case on every run after the first.
@@ -911,9 +965,43 @@ export async function bootstrap(
     await extractAssets(cacheRoot, manifest.assets, embeddedFiles);
     process.stderr.write(`[bootstrap] Extraction complete.\n`);
 
+    // Reclaim disk from superseded builds of the same version (best-effort;
+    // a dir still in use by another running instance is locked and skipped).
+    await gcStaleBuilds(cacheRoot, versionPrefix);
+
     return await buildResult(cacheRoot, manifest.assets, true);
   } finally {
     await releaseLock(cacheRoot);
+  }
+}
+
+/** Short, stable id for this exact build: sha256 over each asset's id+digest. */
+function computeBuildId(manifest: AssetManifest): string {
+  const parts = manifest.assets.map((a) => `${a.id}:${a.digest}`).sort();
+  const hasher = new Bun.CryptoHasher("sha256");
+  hasher.update(parts.join("\n"));
+  return hasher.digest("hex").slice(0, 12);
+}
+
+/**
+ * Best-effort removal of superseded cache dirs for the same opencode version
+ * (i.e. siblings sharing `versionPrefix` but a different build hash, plus their
+ * leftover temp/stale scratch dirs), keeping only the current build. A dir held
+ * open by a still-running older instance fails the rm and is simply skipped.
+ * Never throws.
+ */
+async function gcStaleBuilds(cacheRoot: string, versionPrefix: string): Promise<void> {
+  const parent = path.dirname(cacheRoot);
+  const current = path.basename(cacheRoot);
+  let entries: string[];
+  try {
+    entries = await fs.readdir(parent);
+  } catch {
+    return;
+  }
+  for (const name of entries) {
+    if (name === current || !name.startsWith(versionPrefix)) continue;
+    await fs.rm(path.join(parent, name), { recursive: true, force: true }).catch(() => {});
   }
 }
 
