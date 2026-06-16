@@ -146,7 +146,7 @@ vLLM-specific values:
 ```json
 "baseURL": "{env:VLLM_BASE_URL}",
 "apiKey":  "{env:VLLM_API_KEY}",
-"models":  { "{env:VLLM_MODEL}": { "name": "vLLM model" } }
+"models":  { "{env:VLLM_MODEL}": { "name": "vLLM model", "limit": { "context": 131072, "output": 32768 } } }
 ```
 
 opencode resolves these at startup from the process environment. To switch
@@ -170,6 +170,48 @@ The override file only needs the fields you want to change. It is merged on top 
 the embedded defaults, so LSP and MCP settings carry through untouched.
 
 Neither option requires rebuilding or redistributing the exe.
+
+---
+
+## Model context / output token limits
+
+Custom (OpenAI-compatible) providers like vLLM are **not** in models.dev, so
+opencode cannot auto-discover their token limits. You must declare them per
+model under `provider.vllm.models.<modelId>.limit`:
+
+```json
+"models": {
+  "{env:VLLM_MODEL}": {
+    "name": "vLLM model",
+    "limit": {
+      "context": 131072,
+      "output": 32768
+    }
+  }
+}
+```
+
+- `limit.context` — maximum **input** tokens (the model's full context window).
+  opencode uses this to track remaining context and to trigger compaction.
+- `limit.output` — maximum tokens the model may **generate** per response.
+
+The bundled default is `context: 131072` / `output: 32768` (typical for Llama
+3.1-class models). **Set these to match how your vLLM server was launched** —
+in particular `--max-model-len` bounds the context window; a `limit.context`
+larger than `--max-model-len` will cause the server to reject long requests.
+
+These are numeric JSON values, so unlike `baseURL`/`apiKey`/`model` they are
+**not** wired to `{env:VAR}` placeholders (an unset/string env var would produce
+invalid JSON). To change them without rebuilding, edit them in your
+`OPENCODE_CONFIG` override file (Option B above) or in the seeded
+`~/.config/opencode/opencode.json`.
+
+> Note: some opencode versions have ignored `limit.output` for custom providers
+> and capped generation at 32000 tokens
+> ([opencode#20078](https://github.com/anomalyco/opencode/issues/20078)), or
+> errored when `limit` was absent
+> ([opencode#22253](https://github.com/anomalyco/opencode/issues/22253)). Keeping
+> an explicit `limit` block set avoids the latter.
 
 ---
 
