@@ -9,7 +9,11 @@
       },
       "models": {
         "{env:VLLM_MODEL}": {
-          "name": "vLLM model"
+          "name": "vLLM model",
+          "limit": {
+            "context": 131072,
+            "output": 32768
+          }
         }
       }
     }
