@@ -13,10 +13,8 @@ staging/
 spikes/*/payload/
 spikes/*/dist/
 
-# OMC runtime state — not part of the project source
-.omc/sessions/
-.omc/state/
-.omc/project-memory.json
+# OMC internal planning/spec docs and runtime state — not part of the public project
+.omc/
 
 # Local runtime secrets — never commit. The .env.example template is tracked.
 .env
