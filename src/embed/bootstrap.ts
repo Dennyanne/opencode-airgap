@@ -352,6 +352,47 @@ async function unpackArchive(
   }
 }
 
+/** Windows raises these transiently while AV / the indexer hold a handle. */
+const TRANSIENT_FS_CODES = new Set(["EPERM", "EACCES", "EBUSY", "ENOTEMPTY"]);
+
+function errnoCode(err: unknown): string | undefined {
+  return err && typeof err === "object" && "code" in err
+    ? (err as { code?: string }).code
+    : undefined;
+}
+
+/**
+ * Move a single filesystem entry from `src` to `dest`, riding out the transient
+ * EPERM/EACCES/EBUSY failures Windows raises while antivirus or the search
+ * indexer briefly hold a handle on just-extracted files (node.exe, npm under
+ * node_modules, the JRE, …). If rename keeps failing — some Windows directory
+ * renames, e.g. trees containing junctions, never succeed via MoveFileEx no
+ * matter how long we wait — fall back to a recursive copy + remove so the
+ * flatten always completes.
+ */
+async function moveEntry(src: string, dest: string): Promise<void> {
+  let lastErr: unknown;
+  for (let attempt = 0; attempt < 6; attempt++) {
+    try {
+      await fs.rename(src, dest);
+      return;
+    } catch (err: unknown) {
+      lastErr = err;
+      const code = errnoCode(err);
+      if (!code || !TRANSIENT_FS_CODES.has(code)) throw err;
+      await sleep(250 * Math.pow(2, attempt)); // 0.25s, 0.5s … ~8s
+    }
+  }
+  // Last resort: copy the tree into place, then delete the source. Copying
+  // succeeds in the locked-handle / junction cases where rename cannot.
+  try {
+    await fs.cp(src, dest, { recursive: true, force: true });
+    await fs.rm(src, { recursive: true, force: true });
+  } catch {
+    throw lastErr;
+  }
+}
+
 /**
  * If `dir` contains exactly one entry and it is a directory, hoist that inner
  * directory's contents up one level. Upstream archives (Temurin JRE, Node.js,
@@ -364,7 +405,7 @@ async function flattenLoneTopDir(dir: string): Promise<void> {
   if (entries.length !== 1 || !entries[0].isDirectory()) return;
   const inner = path.join(dir, entries[0].name);
   for (const name of await fs.readdir(inner)) {
-    await fs.rename(path.join(inner, name), path.join(dir, name));
+    await moveEntry(path.join(inner, name), path.join(dir, name));
   }
   await fs.rm(inner, { recursive: true, force: true });
 }
@@ -379,7 +420,6 @@ async function flattenLoneTopDir(dir: string): Promise<void> {
  * with exponential backoff to ride those out; surface any non-transient error.
  */
 async function promoteCache(tmpRoot: string, cacheRoot: string): Promise<void> {
-  const transient = new Set(["EPERM", "EACCES", "EBUSY", "ENOTEMPTY"]);
   let lastErr: unknown;
   for (let attempt = 0; attempt < 6; attempt++) {
     try {
@@ -389,11 +429,8 @@ async function promoteCache(tmpRoot: string, cacheRoot: string): Promise<void> {
       return;
     } catch (err: unknown) {
       lastErr = err;
-      const code =
-        err && typeof err === "object" && "code" in err
-          ? (err as { code?: string }).code
-          : undefined;
-      if (!code || !transient.has(code)) throw err;
+      const code = errnoCode(err);
+      if (!code || !TRANSIENT_FS_CODES.has(code)) throw err;
       await sleep(250 * Math.pow(2, attempt)); // 0.25s, 0.5s … ~8s
     }
   }
