@@ -315,6 +315,30 @@ VLLM_MODEL=meta-llama/Llama-3.1-70B-Instruct
   ```
 - `.env`에는 비밀값이 들어갈 수 있어 `.gitignore` 처리되어 있습니다. 추적되는 건 `.env.example` 템플릿뿐입니다.
 
+### 모델 컨텍스트/출력 토큰 한도
+
+vLLM처럼 커스텀(OpenAI 호환) provider는 models.dev에 없어서 opencode가 토큰 한도를
+자동으로 알 수 없습니다. 따라서 `provider.vllm.models.<모델ID>.limit`에 직접 명시합니다.
+
+```json
+"limit": {
+  "context": 131072,
+  "output": 32768
+}
+```
+
+| 필드 | 의미 |
+|------|------|
+| `limit.context` | 최대 **입력** 토큰 = 모델 컨텍스트 윈도우. opencode의 잔여 컨텍스트 추적/압축 트리거에 사용 |
+| `limit.output` | 응답당 모델이 **생성**할 수 있는 최대 토큰 수 |
+
+- 기본값은 `context: 131072` / `output: 32768`(Llama 3.1 계열 기준)입니다.
+- ⚠️ **vLLM 서버 기동 옵션에 맞추세요.** 특히 `--max-model-len`보다 큰 `context`를 주면
+  서버가 긴 요청을 거부합니다.
+- 이 값은 **숫자**라서 `{env:VAR}` 치환을 쓰지 않습니다(빈/문자열 env는 JSON을 깨뜨림).
+  재빌드 없이 바꾸려면 `OPENCODE_CONFIG` 오버라이드 파일이나 시드된
+  `~/.config/opencode/opencode.json`에서 직접 수정하세요.
+
 ### 부트스트랩이 자동으로 주입하는 변수 (수동 설정 불필요)
 
 | 변수 | 값 |
