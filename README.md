@@ -415,6 +415,72 @@ oh-my-opencode 내장 MCP 중 외부 인터넷이 필요한 3종은 `enabled: fa
 
 ---
 
+## 문제 해결 (Troubleshooting)
+
+### 새 exe로 다시 빌드 → 캐시 정리 → 실행
+
+캐시 폴더는 `%LOCALAPPDATA%\opencode-airgap\<버전>-<빌드해시>` 형태이며, 빌드(설정/자산)가
+바뀌면 **새 폴더에 추출**됩니다. 따라서 보통은 옛 캐시를 수동으로 지울 필요가 없습니다. 그래도
+깨끗이 다시 시작하고 싶다면:
+
+```powershell
+# 1) 캐시를 점유 중인 프로세스 확인 (있으면 종료)
+Get-Process node,opencode,opencode-airgap,java -ErrorAction SilentlyContinue | Select Id,ProcessName,Path
+#    예: Stop-Process -Id <PID> -Force
+
+# 2) 캐시 통째로 삭제 (선택)
+Remove-Item -Recurse -Force "$env:LOCALAPPDATA\opencode-airgap"
+
+# 3) (빌드 머신) 재빌드 — GITHUB_TOKEN으로 API 레이트리밋(403) 회피
+$env:GITHUB_TOKEN = "ghp_..."
+bun run src/cli/index.ts build --out dist\opencode-airgap.exe
+
+# 4) 새 exe 실행
+.\opencode-airgap.exe
+```
+
+### 첫 실행/추출 시 `EPERM` / `EACCES` (rename·rm 실패)
+
+방금 추출된 바이너리를 백신/인덱서가 잠그거나, 옛 캐시를 실행 중인 인스턴스가 점유하면 발생할 수
+있습니다. 부트스트랩이 자동으로 대응합니다:
+
+- 디렉터리 평탄화·캐시 승격은 백오프 재시도하며, 마지막엔 복사 폴백/ move-aside로 처리합니다.
+- 빌드별 캐시 격리로 **새 빌드는 잠긴 옛 캐시를 건드리지 않습니다**. 옛 빌드 폴더는 추출 성공 후
+  best-effort로 정리되며, 잠겨 있으면 건너뜁니다.
+
+그래도 막히면 실행 중인 `opencode`/`node`/`java`를 모두 종료(또는 재부팅)한 뒤 위 "캐시 정리"를
+수행하세요. 에러 메시지에 점유 프로세스를 종료하라는 안내가 함께 출력됩니다.
+
+### `opencode-airgap.exe`가 실행되자마자 즉시 종료됨
+
+TUI는 종료 시 화면을 복원해 에러가 안 보일 수 있습니다. stderr를 파일로 떠서 확인하세요:
+
+```powershell
+& "$env:LOCALAPPDATA\opencode-airgap\<버전>-<빌드해시>\opencode\opencode.exe" 2> "$env:TEMP\oc-err.txt"
+"exit=$LASTEXITCODE"; Get-Content "$env:TEMP\oc-err.txt"
+# opencode 자체 로그:
+Get-ChildItem "$env:USERPROFILE\.local\share\opencode\log\*.log" |
+  Sort-Object LastWriteTime -Descending | Select-Object -First 1 | Get-Content -Tail 60
+```
+
+`Configuration is invalid ...`가 보이면 `~/.config/opencode/opencode.json`이 잘못된 것입니다.
+이 파일은 **유효한 JSON이면 자동 교체되지 않으므로**, 처음 잘못 시드된 경우 직접 수정해야 합니다
+(예: `model`은 `"vllm/모델명"` **문자열**이어야 함). vLLM 연결 환경변수(`VLLM_BASE_URL` 등)도
+설정돼 있어야 합니다 — 위 "Config 설정" 참고.
+
+### 그냥 `opencode`라고 치면 `MODULE_NOT_FOUND`
+
+`%AppData%\Roaming\npm`에 따로 설치된 글로벌 npm `opencode-ai`(셰임)가 PATH에서 가로채는
+경우입니다. 에어갭 도구는 항상 **`opencode-airgap.exe`로 실행**하세요. 깨진 글로벌 셰임을 없애려면
+`npm uninstall -g opencode-ai`.
+
+### 빌드 시 GitHub API `HTTP 403`
+
+비인증 요청은 시간당 60회로 제한됩니다. 빌드 전 `GITHUB_TOKEN`(또는 `GH_TOKEN`)을 설정하세요
+(공개 저장소라 스코프 없는 토큰이면 충분). 페처가 이를 자동으로 사용합니다.
+
+---
+
 ## 개발 참고
 
 ```powershell
