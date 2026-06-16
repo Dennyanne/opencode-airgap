@@ -9,6 +9,7 @@
  */
 
 import { join } from "path";
+import { tmpdir } from "os";
 import { readFileSync, existsSync, writeFileSync } from "fs";
 import type { FetchContext, FetchResult, AssetEntry } from "./types.ts";
 import { platformFromTarget } from "./types.ts";
@@ -66,6 +67,14 @@ async function installNpmPackage(
     );
   }
 
+  // The npm fetchers run concurrently (Promise.all in index.ts) and each spawns
+  // `bun add`. Sharing the default global Bun cache makes those parallel
+  // installs race while populating a cold cache, which surfaces as
+  // "ENOENT: failed opening cache/package/version dir ..." on a fresh runner.
+  // Give each install its own cache dir (outside staging, so it is never
+  // embedded) to remove the contention while keeping the fetchers parallel.
+  const cacheDir = join(tmpdir(), "airbuild-bun-cache", stagingDir.replace(/[^a-zA-Z0-9]/g, "_"));
+
   // --ignore-scripts: do not run package postinstall hooks during staging.
   // oh-my-opencode's postinstall shells out to `opencode --version`, and other
   // packages' install scripts could make outbound calls — neither is wanted on
@@ -75,6 +84,7 @@ async function installNpmPackage(
     ["bun", "add", "--exact", "--ignore-scripts", ...packages],
     {
       cwd: stagingDir,
+      env: { ...process.env, BUN_INSTALL_CACHE_DIR: cacheDir },
       stdout: "pipe",
       stderr: "pipe",
     },

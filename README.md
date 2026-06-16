@@ -500,9 +500,19 @@ bun -e "JSON.parse(await Bun.file('templates/opencode.json').text()); console.lo
 
 ### CI
 
-`.github/workflows/spikes.yml`이 self-hosted Windows x64 러너에서 두 잡을 실행합니다.
+`.github/workflows/spikes.yml`이 GitHub-hosted `windows-latest` 러너에서 두 잡을 실행합니다.
 
 | 잡 | 검증 |
 |----|------|
 | `windows-spikes` | 타입체크 + spike1/2/3 (`run.ps1`) |
 | `windows-build` | `airbuild build` + `airbuild update` 엔드투엔드 (실자산 다운로드·컴파일·lock·교체) — `GITHUB_TOKEN`으로 레이트리밋 회피 |
+
+---
+
+## 라이선스 및 서드파티 고지
+
+- 이 저장소의 **소스 코드**(airbuild 빌드/업데이트 도구 및 런타임 부트스트랩)는 **MIT License**입니다 — `LICENSE` 참고.
+- 빌드 산출물 `opencode-airgap.exe`는 opencode, oh-my-opencode, Eclipse Temurin JRE, Node.js, 각종 LSP/MCP/도구를 **임베드·재배포**합니다. 이들은 MIT가 아니라 **각자의 라이선스**를 따릅니다. 구성요소별 라이선스와 재배포 의무는 **`THIRD-PARTY-NOTICES.md`** 에 정리돼 있습니다.
+- 빌드 시 `THIRD-PARTY-NOTICES.md`가 `asset-manifest.json`과 함께 exe 옆에 자동 복사됩니다. **exe를 재배포할 때는 이 고지 파일을 반드시 동봉**하세요.
+- 특히 **Temurin JRE는 GPLv2 + Classpath Exception**입니다. Classpath Exception 덕에 나머지 코드로 GPL이 전염되지 않지만, JRE 바이너리 재배포 시 **라이선스 고지 + 대응 소스 제공(또는 서면 오퍼)** 의무가 있습니다(소스: adoptium.net). 자세한 내용은 `THIRD-PARTY-NOTICES.md` 참고.
+- `opencode-airgap`은 폐쇄망용 **비공식 재배포**이며 업스트림 프로젝트의 보증/제휴와 무관합니다.
